@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Playlist Downloader</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🎵 YouTube Playlist Downloader</h1>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="label">Status:</span>
+                    <span id="status" class="status-value">Loading...</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Playlists:</span>
+                    <span id="playlist-count" class="status-value">0</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Downloads:</span>
+                    <span id="download-count" class="status-value">0</span>
+                </div>
+            </div>
+        </header>
+
+        <main>
+            <!-- Add Playlist Section -->
+            <section class="add-playlist">
+                <h2>Add New Playlist</h2>
+                <form id="playlist-form">
+                    <div class="form-group">
+                        <label for="playlist-url">YouTube Playlist URL:</label>
+                        <input type="url" id="playlist-url" placeholder="https://www.youtube.com/playlist?list=..." required>
+                    </div>
+                    <div class="form-group">
+                        <label for="playlist-name">Custom Name (optional):</label>
+                        <input type="text" id="playlist-name" placeholder="My Awesome Playlist">
+                    </div>
+                    <button type="submit" class="btn btn-primary">Add Playlist</button>
+                    <button type="button" id="check-now" class="btn btn-secondary">Check All Now</button>
+                </form>
+            </section>
+
+            <!-- Current Activity -->
+            <section class="activity">
+                <h3>Current Activity</h3>
+                <div id="current-activity" class="activity-status">Idle</div>
+                <div class="last-check">
+                    Last check: <span id="last-check">Never</span>
+                </div>
+            </section>
+
+            <!-- Playlists List -->
+            <section class="playlists">
+                <h2>Monitored Playlists</h2>
+                <div id="playlists-list">
+                    <div class="loading">Loading playlists...</div>
+                </div>
+            </section>
+
+            <!-- Recent Downloads -->
+            <section class="recent-downloads">
+                <h2>Recent Downloads</h2>
+                <div id="downloads-list">
+                    <div class="loading">Loading downloads...</div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>

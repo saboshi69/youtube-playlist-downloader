@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  youtube-downloader:
+    build: .
+    container_name: youtube-playlist-downloader
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./downloads:/downloads
+      - ./data:/app/data
+    environment:
+      - CHECK_INTERVAL=3600  # Check every hour
+      - DOWNLOAD_FORMAT=mp3
+      - AUDIO_QUALITY=320
+      - DATABASE_PATH=/app/data/downloads.db
+    networks:
+      - youtube-downloader
+
+  redis:
+    image: redis:7-alpine
+    container_name: youtube-redis
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    networks:
+      - youtube-downloader
+
+volumes:
+  redis_data:
+
+networks:
+  youtube-downloader:
+    driver: bridge
