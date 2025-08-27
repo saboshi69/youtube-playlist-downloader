@@ -1,4 +1,4 @@
-yt-dlp==2023.9.24
+yt-dlp==2025.8.22
 fastapi==0.104.1
 uvicorn==0.24.0
 pydantic==2.4.2

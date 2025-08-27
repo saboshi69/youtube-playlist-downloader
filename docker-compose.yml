@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   youtube-downloader:
     build: .
@@ -11,12 +9,14 @@ services:
       - ./downloads:/downloads
       - ./data:/app/data
     environment:
-      - CHECK_INTERVAL=3600  # Check every hour
+      - CHECK_INTERVAL=3600
       - DOWNLOAD_FORMAT=mp3
       - AUDIO_QUALITY=320
       - DATABASE_PATH=/app/data/downloads.db
     networks:
       - youtube-downloader
+    depends_on:
+      - redis
 
   redis:
     image: redis:7-alpine
