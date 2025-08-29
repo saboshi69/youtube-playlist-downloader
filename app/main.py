@@ -200,63 +200,51 @@ async def get_status():
         }
 
 @app.post("/api/playlists")
-async def add_playlist(playlist: PlaylistRequest):
-    """Add a new playlist to monitor and perform initial check"""
+async def add_playlist(playlist: PlaylistRequest, background_tasks: BackgroundTasks):
+    """Add playlist with background initial check"""
     try:
-        # Clean URL (remove HTML entities)
-        clean_url = playlist.url.replace('&amp;', '&')
+        # Clean URL
+        clean_url = playlist.url.replace('&amp;', '&').strip()
         
-        if not ("youtube.com/playlist" in clean_url or "music.youtube.com/playlist" in clean_url):
-            raise HTTPException(status_code=400, detail="Invalid YouTube playlist URL")
-        
-        # Update status
-        app_status["current_activity"] = "Adding playlist and checking videos..."
-        
-        # Extract playlist info
+        # Quick playlist info extraction
         playlist_info = downloader.get_playlist_info(clean_url)
-        if not playlist_info.get('entries'):
-            app_status["current_activity"] = "Idle"
-            raise HTTPException(status_code=400, detail="Could not extract playlist information or playlist is empty")
+        
+        if not playlist_info or not playlist_info.get('entries'):
+            raise HTTPException(status_code=400, detail="Could not extract playlist information")
         
         # Add to database
-        playlist_name = playlist.name or playlist_info.get('title', 'Unnamed Playlist')
+        playlist_name = playlist.name or playlist_info.get('title', 'Unknown Playlist')
         playlist_id = db_manager.add_playlist(clean_url, playlist_name)
         
         if not playlist_id:
-            app_status["current_activity"] = "Idle"
-            raise HTTPException(status_code=400, detail="Playlist already exists or could not be added")
+            raise HTTPException(status_code=400, detail="Playlist already exists")
         
-        # Perform initial check and sync
-        new_downloads, existing_count, failed_count = monitor.perform_initial_playlist_check(playlist_id, playlist_info)
-        
-        # Update status
-        app_status["total_playlists"] = len(db_manager.get_active_playlists())
-        app_status["total_downloads"] += new_downloads
-        app_status["current_activity"] = "Idle"
-        
-        # Get status counts (with safe fallback)
-        try:
-            status_counts = db_manager.get_playlist_status_counts(playlist_id)
-        except:
-            status_counts = {'pending': 0, 'downloaded': 0, 'failed': 0}
+        # Run initial check in background
+        total_videos = len(playlist_info.get('entries', []))
+        background_tasks.add_task(run_initial_playlist_check, playlist_id, playlist_info)
         
         return {
             "success": True,
-            "message": f"Added playlist: {playlist_name}",
-            "id": playlist_id,
-            "total_videos": len(playlist_info['entries']),
-            "new_downloads": new_downloads,
-            "existing_videos": existing_count,
-            "failed_videos": failed_count,
-            "pending_videos": status_counts.get('pending', 0),
-            "details": f"Found {len(playlist_info['entries'])} videos. Downloaded {new_downloads} new, {existing_count} already existed, {failed_count} failed, {status_counts.get('pending', 0)} pending."
+            "message": f"Playlist added successfully. Processing {total_videos} videos in background.",
+            "playlist_id": playlist_id,
+            "playlist_name": playlist_name,
+            "total_videos": total_videos
         }
-    
-    except HTTPException:
-        raise
+        
     except Exception as e:
-        app_status["current_activity"] = "Idle"
         raise HTTPException(status_code=500, detail=str(e))
+
+def run_initial_playlist_check(playlist_id: int, playlist_info: dict):
+    """Background task for initial playlist processing"""
+    try:
+        app_status["current_activity"] = f"Processing new playlist (ID: {playlist_id})"
+        new_downloads, existing_count, failed_count = monitor.perform_initial_playlist_check(playlist_id, playlist_info)
+        app_status["current_activity"] = "Idle"
+        app_status["total_downloads"] += new_downloads
+        print(f"Initial playlist check completed: {new_downloads} downloaded, {existing_count} existing, {failed_count} failed")
+    except Exception as e:
+        print(f"Initial playlist check failed: {e}")
+        app_status["current_activity"] = "Error in playlist processing"
 
 @app.get("/api/playlists")
 async def get_playlists():
@@ -287,25 +275,51 @@ async def remove_playlist(playlist_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/check-now")
-async def trigger_check():
-    """Manually trigger playlist checking with concurrency protection"""
+async def trigger_check(background_tasks: BackgroundTasks):
+    """Trigger manual check in background"""
     try:
-        result = monitor.trigger_manual_check()
+        # Check if already running
+        with monitor._check_lock:
+            if monitor._is_checking:
+                return {
+                    "success": False,
+                    "message": "Check already in progress. Please wait...",
+                    "status": "already_running"
+                }
+            monitor._is_checking = True
+
+        # Run check in background
+        background_tasks.add_task(run_background_check)
         
-        if result["success"]:
-            app_status["last_check"] = datetime.now().isoformat()
-            app_status["total_downloads"] += result.get("new_songs", 0)
-            app_status["current_activity"] = "Idle"
+        app_status["current_activity"] = "Checking playlists..."
         
-        return result
+        return {
+            "success": True,
+            "message": "Playlist check started in background",
+            "status": "started"
+        }
         
     except Exception as e:
-        app_status["current_activity"] = "Idle"
         return {
             "success": False,
-            "message": f"Check failed: {str(e)}",
+            "message": f"Error starting check: {str(e)}",
             "status": "error"
         }
+
+def run_background_check():
+    """Background task for playlist checking"""
+    try:
+        total_new = monitor.check_all_playlists()
+        app_status["current_activity"] = "Idle"
+        app_status["last_check"] = datetime.now().isoformat()
+        app_status["total_downloads"] += total_new
+        print(f"Background check completed: {total_new} new songs")
+    except Exception as e:
+        print(f"Background check failed: {e}")
+        app_status["current_activity"] = "Error in background check"
+    finally:
+        with monitor._check_lock:
+            monitor._is_checking = False
 
 
 @app.get("/api/downloads")

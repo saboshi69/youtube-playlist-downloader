@@ -83,13 +83,43 @@ class DatabaseManager:
             return [dict(row) for row in cursor.fetchall()]
 
     def video_exists(self, video_id: str) -> bool:
-        """Check if video already exists in database"""
+        """Check if video already exists and was successfully downloaded"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(
+                'SELECT 1 FROM videos WHERE video_id = ? AND status IN ("downloaded", "duplicate")',
+                (video_id,)
+            )
+            return cursor.fetchone() is not None
+
+    def video_in_database(self, video_id: str) -> bool:
+        """Check if video exists in database regardless of status"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
                 'SELECT 1 FROM videos WHERE video_id = ?',
                 (video_id,)
             )
             return cursor.fetchone() is not None
+
+
+    def get_pending_videos(self, playlist_id: int = None):
+        """Get all pending videos, optionally filtered by playlist"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            if playlist_id:
+                cursor = conn.execute('''
+                    SELECT video_id, title, playlist_id
+                    FROM videos 
+                    WHERE status = 'pending' AND playlist_id = ?
+                    ORDER BY id ASC
+                ''', (playlist_id,))
+            else:
+                cursor = conn.execute('''
+                    SELECT video_id, title, playlist_id
+                    FROM videos 
+                    WHERE status = 'pending'
+                    ORDER BY id ASC
+                ''')
+            return [dict(row) for row in cursor.fetchall()]
 
     def add_video(self, video_data):
         """Add a new video to database"""

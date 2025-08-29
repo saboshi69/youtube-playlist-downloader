@@ -1,6 +1,8 @@
 import os
 import time
 import threading
+import sqlite3
+import json
 from typing import Dict
 import yt_dlp
 
@@ -14,8 +16,8 @@ class PlaylistMonitor:
         self.downloader = downloader
         self.config = Config()
         self.running = False
-        
-        # ADD: Concurrency control
+
+        # Concurrency control locks
         self._check_lock = threading.Lock()
         self._is_checking = False
         self._initial_check_lock = threading.Lock()
@@ -63,7 +65,7 @@ class PlaylistMonitor:
         with self._check_lock:
             if self._is_checking:
                 return {
-                    "success": False, 
+                    "success": False,
                     "message": "Check already in progress. Please wait...",
                     "status": "already_running"
                 }
@@ -93,12 +95,12 @@ class PlaylistMonitor:
         """Check all active playlists for new videos"""
         playlists = self.db_manager.get_active_playlists()
         total_new = 0
-        
+
         for playlist in playlists:
             print(f"Checking playlist: {playlist['name'] or playlist['url']}")
             new_count = self.check_playlist(playlist)
             total_new += new_count
-            
+
         return total_new
 
     def perform_initial_playlist_check(self, playlist_id: int, playlist_info: dict):
@@ -106,7 +108,6 @@ class PlaylistMonitor:
         with self._initial_check_lock:
             if self._is_initial_checking:
                 print("⚠️ Another initial check in progress, queuing...")
-                # Wait briefly and try again
                 time.sleep(5)
                 with self._initial_check_lock:
                     if self._is_initial_checking:
@@ -115,22 +116,22 @@ class PlaylistMonitor:
 
         try:
             print(f"🔄 Starting initial check for playlist {playlist_id}")
-            
+
             if not playlist_info or not isinstance(playlist_info, dict):
                 return 0, 0, 1
-            
+
             entries = playlist_info.get('entries', [])
             print(f"Initial check for {len(entries)} videos")
-            
+
             new_downloads = 0
             existing_count = 0
             failed_count = 0
-            
+
             for i, entry in enumerate(entries):
                 if not isinstance(entry, dict) or not entry.get('id'):
                     failed_count += 1
                     continue
-                
+
                 video_id = entry['id']
                 print(f"Processing {i+1}/{len(entries)}: {entry.get('title', video_id)}")
 
@@ -147,8 +148,8 @@ class PlaylistMonitor:
                             'video_id': video_id,
                             'title': entry.get('title', 'Unknown'),
                             'uploader': 'Unknown',
-                            'duration': 0,
-                            'upload_date': '',
+                            'duration': entry.get('duration', 0),
+                            'upload_date': entry.get('upload_date', ''),
                             'playlist_id': playlist_id,
                             'file_path': None,
                             'metadata': {},
@@ -161,10 +162,9 @@ class PlaylistMonitor:
 
                     # Download video (includes automatic wait if successful)
                     video_data = self.downloader.download_video(entry['url'], video_id)
-                    
+
                     if video_data is None or video_data.get('status') == 'failed':
                         failed_count += 1
-                        # Add as failed and continue
                         continue
 
                     # Check for duplicates by hash
@@ -197,37 +197,40 @@ class PlaylistMonitor:
             self.db_manager.update_playlist_check_time(playlist_id)
             print(f"✅ Initial check complete: {new_downloads} downloaded, {existing_count} existing, {failed_count} failed")
             return new_downloads, existing_count, failed_count
-            
+
         finally:
             with self._initial_check_lock:
                 self._is_initial_checking = False
 
     def check_playlist(self, playlist: dict):
-        """Check a single playlist for new videos"""
+        """Check a single playlist for new videos and download pending ones"""
         try:
             playlist_info = self.downloader.get_playlist_info(playlist['url'])
-            
+
             if not playlist_info or not playlist_info.get('entries'):
                 print(f"❌ No entries found for playlist: {playlist['url']}")
                 return 0
-            
+
             new_videos = 0
             skipped_videos = 0
-            
+
+            # First, check for new videos from playlist
             for entry in playlist_info['entries']:
                 if not isinstance(entry, dict) or not entry.get('id'):
                     continue
-                
+
                 video_id = entry['id']
-                
+
+                # Check if video was successfully downloaded or is duplicate
                 if self.db_manager.video_exists(video_id):
                     skipped_videos += 1
                     continue
 
                 print(f"New video found: {entry['title']}")
-                
+
+                # Download new video
                 video_data = self.downloader.download_video(entry['url'], video_id)
-                
+
                 if video_data is None:
                     continue
 
@@ -241,13 +244,60 @@ class PlaylistMonitor:
                         video_data['status'] = 'duplicate'
                         video_data['file_path'] = existing_file['file_path']
 
-                # Add to database
-                video_data['playlist_id'] = playlist['id']
-                self.db_manager.add_video(video_data)
+                # Add to database or update existing pending entry
+                if self.db_manager.video_in_database(video_id):
+                    # Update existing pending entry
+                    self._update_video_status(video_id, video_data)
+                else:
+                    # Add new video
+                    video_data['playlist_id'] = playlist['id']
+                    self.db_manager.add_video(video_data)
+
                 self.db_manager.log_download_action(
                     video_id,
                     video_data.get('status', 'processed'),
                     f"Downloaded from playlist {playlist['name']}",
+                    playlist['id']
+                )
+
+                if video_data.get('status') == 'downloaded':
+                    new_videos += 1
+
+            # Second, process any pending videos for this playlist
+            pending_videos = self.db_manager.get_pending_videos(playlist['id'])
+            if pending_videos:
+                print(f"📋 Found {len(pending_videos)} pending videos to download")
+
+            for pending in pending_videos:
+                print(f"📥 Processing pending video: {pending['title']}")
+
+                # Find the video in current playlist info
+                video_url = f"https://www.youtube.com/watch?v={pending['video_id']}"
+
+                video_data = self.downloader.download_video(video_url, pending['video_id'])
+
+                if video_data is None:
+                    # Mark as failed
+                    self._update_video_status(pending['video_id'], {'status': 'failed'})
+                    continue
+
+                # Check for duplicates by hash
+                if video_data.get('file_hash'):
+                    existing_file = self.db_manager.get_file_by_hash(video_data['file_hash'])
+                    if existing_file:
+                        print(f"Duplicate detected: {video_data['title']}")
+                        if video_data.get('file_path') and os.path.exists(video_data['file_path']):
+                            os.remove(video_data['file_path'])
+                        video_data['status'] = 'duplicate'
+                        video_data['file_path'] = existing_file['file_path']
+
+                # Update the pending entry
+                self._update_video_status(pending['video_id'], video_data)
+
+                self.db_manager.log_download_action(
+                    pending['video_id'],
+                    video_data.get('status', 'processed'),
+                    f"Downloaded pending from playlist {playlist['name']}",
                     playlist['id']
                 )
 
@@ -261,3 +311,25 @@ class PlaylistMonitor:
         except Exception as e:
             print(f"Error checking playlist: {e}")
             return 0
+
+    def _update_video_status(self, video_id: str, video_data: dict):
+        """Update existing video record with new data"""
+        with sqlite3.connect(self.db_manager.db_path) as conn:
+            conn.execute('''
+                UPDATE videos
+                SET title = ?, uploader = ?, duration = ?, upload_date = ?,
+                file_path = ?, metadata = ?, file_hash = ?, file_size = ?, status = ?
+                WHERE video_id = ?
+            ''', (
+                video_data.get('title', ''),
+                video_data.get('uploader', ''),
+                video_data.get('duration', 0),
+                video_data.get('upload_date', ''),
+                video_data.get('file_path', ''),
+                json.dumps(video_data.get('metadata', {})),
+                video_data.get('file_hash', ''),
+                video_data.get('file_size', 0),
+                video_data.get('status', 'downloaded'),
+                video_id
+            ))
+            conn.commit()
