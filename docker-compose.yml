@@ -1,6 +1,7 @@
+version: '3.8'
 services:
   youtube-downloader:
-    build: .
+    image: saboshi69/youtube-playlist-downloader:latest
     container_name: youtube-playlist-downloader
     restart: unless-stopped
     ports:
@@ -18,8 +19,6 @@ services:
       - DOWNLOAD_DELAY_MAX=120          # Maximum delay in seconds (2 minutes)
     networks:
       - youtube-downloader
-    depends_on:
-      - redis
 
   redis:
     image: redis:7-alpine
