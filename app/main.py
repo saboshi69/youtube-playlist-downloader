@@ -288,19 +288,25 @@ async def remove_playlist(playlist_id: int):
 
 @app.post("/api/check-now")
 async def trigger_check():
-    """Manually trigger playlist checking"""
+    """Manually trigger playlist checking with concurrency protection"""
     try:
-        app_status["current_activity"] = "Checking playlists..."
-        app_status["last_check"] = datetime.now().isoformat()
+        result = monitor.trigger_manual_check()
         
-        new_downloads = monitor.check_all_playlists()
-        app_status["current_activity"] = "Idle"
-        app_status["total_downloads"] += new_downloads
+        if result["success"]:
+            app_status["last_check"] = datetime.now().isoformat()
+            app_status["total_downloads"] += result.get("new_songs", 0)
+            app_status["current_activity"] = "Idle"
         
-        return {"success": True, "message": f"Playlist check completed. Found {new_downloads} new songs."}
+        return result
+        
     except Exception as e:
         app_status["current_activity"] = "Idle"
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "success": False,
+            "message": f"Check failed: {str(e)}",
+            "status": "error"
+        }
+
 
 @app.get("/api/downloads")
 async def get_downloads():
