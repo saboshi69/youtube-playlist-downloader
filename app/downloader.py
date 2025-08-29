@@ -1,401 +1,220 @@
 import os
 import yt_dlp
 import hashlib
+import time
+import random
 from typing import Dict, Optional
 from mutagen.mp3 import MP3
 from mutagen.id3 import ID3, TIT2, TPE1, TALB, TDRC
+from config import Config
 
 class YouTubeDownloader:
     def __init__(self, download_dir: str, audio_quality: str = '320'):
         self.download_dir = download_dir
         self.audio_quality = audio_quality
+        self.config = Config()  # Add config instance
         os.makedirs(download_dir, exist_ok=True)
-        
-        # Base configuration for yt-dlp
+
+        # Correct yt-dlp options based on official docs
         self.base_ydl_opts = {
-            'extractaudio': True,
-            'audioformat': 'mp3',
-            'audioquality': self.audio_quality,
-            'embed_metadata': True,
-            'writeinfojson': False,
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '0',  # Best quality auto-determined
+            }],
             'ignoreerrors': True,
-            'no_warnings': True,
-            'quiet': True,
-            # Fix for sign-in issues
-            'cookiefile': None,
-            'age_limit': None,
-            'skip_download': False,
-            # User agent to avoid detection
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            # Additional headers
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-            },
-            # Bypass geo-blocking and age restrictions
-            'geo_bypass': True,
-            'geo_bypass_country': 'US',
-            # Additional bypass options
-            'extractor_retries': 3,
-            'fragment_retries': 3,
-            'retry_sleep_functions': {
-                'http': lambda n: min(2 ** n, 60),
-                'fragment': lambda n: min(2 ** n, 60),
-                'extractor': lambda n: min(2 ** n, 60),
-            }
+            'no_warnings': False,
+            'quiet': False,
         }
-    
+
     def get_playlist_info(self, playlist_url: str) -> Dict:
-        """Extract playlist information without downloading"""
+        """Extract playlist information"""
+        clean_url = playlist_url.replace('&amp;', '&').strip()
+        print(f"🔍 Extracting playlist: {clean_url}")
+        
         ydl_opts = {
-            **self.base_ydl_opts,
             'extract_flat': True,
             'quiet': True,
             'no_warnings': True,
         }
         
-        # Try multiple extraction methods
-        extraction_methods = [
-            # Method 1: Standard extraction
-            ydl_opts,
-            # Method 2: With different format selector
-            {**ydl_opts, 'format': 'best[height<=720]'},
-            # Method 3: With bypass options
-            {**ydl_opts, 'extractor_args': {'youtube': {'skip': ['dash', 'hls']}}},
-            # Method 4: Minimal options
-            {
-                'extract_flat': True,
-                'quiet': True,
-                'no_warnings': True,
-                'ignoreerrors': True,
-            }
-        ]
-        
-        for i, opts in enumerate(extraction_methods):
-            try:
-                with yt_dlp.YoutubeDL(opts) as ydl:
-                    print(f"Trying extraction method {i+1} for playlist...")
-                    info = ydl.extract_info(playlist_url, download=False)
-                    
-                    if info and info.get('entries'):
-                        entries = []
-                        for entry in info.get('entries', []):
-                            if entry and entry.get('id'):
-                                # Skip private or unavailable videos
-                                availability = entry.get('availability', 'public')
-                                if availability in ['private', 'subscriber_only', 'premium_only', 'needs_auth']:
-                                    print(f"Skipping restricted video: {entry.get('title', entry.get('id'))} ({availability})")
-                                    continue
-                                    
-                                entries.append({
-                                    'id': entry.get('id'),
-                                    'title': entry.get('title') or f"Video {entry.get('id')}",
-                                    'url': f"https://youtube.com/watch?v={entry.get('id')}",
-                                    'availability': availability,
-                                    'duration': entry.get('duration'),
-                                    'uploader': entry.get('uploader'),
-                                    'upload_date': entry.get('upload_date')
-                                })
-                        
-                        print(f"Successfully extracted {len(entries)} videos from playlist")
-                        return {
-                            'title': info.get('title', 'Unknown Playlist'),
-                            'entries': entries,
-                            'id': info.get('id'),
-                            'uploader': info.get('uploader'),
-                            'description': info.get('description')
-                        }
-                        
-            except Exception as e:
-                print(f"Extraction method {i+1} failed: {e}")
-                if 'sign in' in str(e).lower():
-                    print("Playlist requires authentication - skipping")
-                    break
-                continue
-        
-        print("All extraction methods failed")
-        return {'title': None, 'entries': []}
-    
-    def download_video(self, video_url: str, video_id: str) -> Optional[Dict]:
-        """Download a single video and return metadata"""
-        safe_title = f"video_{video_id}"
-        file_path = os.path.join(self.download_dir, f"{safe_title}.mp3")
-        
-        # Multiple download strategies with increasing fallback
-        download_strategies = [
-            # Strategy 1: High quality audio
-            {
-                **self.base_ydl_opts,
-                'format': 'bestaudio[ext=m4a]/bestaudio/best',
-                'outtmpl': file_path.replace('.mp3', '.%(ext)s'),
-                'postprocessors': [{
-                    'key': 'FFmpegExtractAudio',
-                    'preferredcodec': 'mp3',
-                    'preferredquality': self.audio_quality,
-                }]
-            },
-            # Strategy 2: Standard quality
-            {
-                **self.base_ydl_opts,
-                'format': 'bestaudio[abr<=192]/best[height<=720]',
-                'outtmpl': file_path.replace('.mp3', '.%(ext)s'),
-                'audioquality': '192',
-            },
-            # Strategy 3: Lower quality fallback
-            {
-                **self.base_ydl_opts,
-                'format': 'bestaudio[abr<=128]/best[height<=480]',
-                'outtmpl': file_path.replace('.mp3', '.%(ext)s'),
-                'audioquality': '128',
-            },
-            # Strategy 4: Any available format
-            {
-                **self.base_ydl_opts,
-                'format': 'worst/worstaudio',
-                'outtmpl': file_path.replace('.mp3', '.%(ext)s'),
-                'audioquality': '96',
-            },
-            # Strategy 5: Minimal options (last resort)
-            {
-                'format': 'bestaudio/best',
-                'outtmpl': file_path.replace('.mp3', '.%(ext)s'),
-                'extractaudio': True,
-                'audioformat': 'mp3',
-                'ignoreerrors': True,
-                'no_warnings': True,
-                'quiet': True,
-            }
-        ]
-        
-        last_error = None
-        
-        for i, ydl_opts in enumerate(download_strategies):
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    print(f"Trying download strategy {i+1} for {video_id}...")
-                    
-                    # Extract info first to check availability
-                    try:
-                        info = ydl.extract_info(video_url, download=False)
-                    except Exception as extract_error:
-                        print(f"Info extraction failed: {extract_error}")
-                        last_error = extract_error
-                        
-                        # Handle specific errors
-                        error_str = str(extract_error).lower()
-                        if any(keyword in error_str for keyword in ['sign in', 'login', 'authenticate', 'private']):
-                            return {
-                                'video_id': video_id,
-                                'title': f'Sign-in Required: {video_id}',
-                                'uploader': 'Unknown',
-                                'duration': 0,
-                                'upload_date': '',
-                                'file_path': None,
-                                'file_hash': None,
-                                'file_size': 0,
-                                'status': 'restricted',
-                                'metadata': {'error': 'Requires sign-in', 'availability': 'requires_auth'}
-                            }
-                        
-                        # For other errors, try next strategy
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(clean_url, download=False)
+                
+                if not info or not isinstance(info, dict):
+                    print(f"❌ Invalid info returned")
+                    return {'title': None, 'entries': []}
+                
+                entries_raw = info.get('entries', [])
+                if not entries_raw:
+                    print(f"❌ No entries found")
+                    return {'title': None, 'entries': []}
+                
+                print(f"📊 Found {len(entries_raw)} raw entries")
+                
+                entries = []
+                for i, entry in enumerate(entries_raw):
+                    if not isinstance(entry, dict) or not entry.get('id'):
                         continue
                     
-                    if not info:
-                        print(f"No info available for {video_id}")
-                        continue
-                    
-                    # Check if video is available
-                    availability = info.get('availability', 'public')
+                    # Skip restricted content
+                    availability = entry.get('availability', 'public')
                     if availability in ['private', 'subscriber_only', 'premium_only', 'needs_auth']:
-                        print(f"Video {video_id} is not publicly available: {availability}")
-                        return {
-                            'video_id': video_id,
-                            'title': info.get('title', f'Restricted: {video_id}'),
-                            'uploader': info.get('uploader', 'Unknown'),
-                            'duration': info.get('duration', 0),
-                            'upload_date': info.get('upload_date', ''),
-                            'file_path': None,
-                            'file_hash': None,
-                            'file_size': 0,
-                            'status': 'restricted',
-                            'metadata': {
-                                'availability': availability,
-                                'description': info.get('description', ''),
-                                'view_count': info.get('view_count', 0)
-                            }
-                        }
-                    
-                    # Check if video is too long (over 30 minutes)
-                    duration = info.get('duration', 0)
-                    if duration and duration > 1800:  # 30 minutes
-                        print(f"Video {video_id} is too long ({duration//60} minutes), skipping")
-                        return {
-                            'video_id': video_id,
-                            'title': info.get('title', f'Too Long: {video_id}'),
-                            'uploader': info.get('uploader', 'Unknown'),
-                            'duration': duration,
-                            'upload_date': info.get('upload_date', ''),
-                            'file_path': None,
-                            'file_hash': None,
-                            'file_size': 0,
-                            'status': 'skipped',
-                            'metadata': {'reason': 'Too long', 'duration_minutes': duration//60}
-                        }
-                    
-                    # Update filename with actual title
-                    title = info.get('title', f'video_{video_id}')
-                    safe_title = self._sanitize_filename(title)
-                    file_path = os.path.join(self.download_dir, f"{safe_title}.mp3")
-                    ydl_opts['outtmpl'] = file_path.replace('.mp3', '.%(ext)s')
-                    
-                    # Download
-                    try:
-                        ydl.download([video_url])
-                    except Exception as download_error:
-                        print(f"Download failed: {download_error}")
-                        last_error = download_error
-                        
-                        # Handle specific download errors
-                        error_str = str(download_error).lower()
-                        if any(keyword in error_str for keyword in ['sign in', 'login', 'authenticate']):
-                            return {
-                                'video_id': video_id,
-                                'title': title,
-                                'uploader': info.get('uploader', 'Unknown'),
-                                'duration': info.get('duration', 0),
-                                'upload_date': info.get('upload_date', ''),
-                                'file_path': None,
-                                'file_hash': None,
-                                'file_size': 0,
-                                'status': 'restricted',
-                                'metadata': {'error': 'Requires sign-in', 'availability': 'requires_auth'}
-                            }
-                        
-                        # Try next strategy
                         continue
                     
-                    # Verify download success and find the actual file
-                    actual_file_path = self._find_downloaded_file(file_path, safe_title)
+                    video_entry = {
+                        'id': entry.get('id'),
+                        'title': entry.get('title') or f"Video {entry.get('id')}",
+                        'url': f"https://www.youtube.com/watch?v={entry.get('id')}",
+                        'availability': availability,
+                        'duration': entry.get('duration'),
+                        'uploader': entry.get('uploader'),
+                        'upload_date': entry.get('upload_date')
+                    }
+                    entries.append(video_entry)
                     
-                    if actual_file_path and os.path.exists(actual_file_path):
-                        # Calculate file hash and size
-                        file_hash = self._calculate_file_hash(actual_file_path)
-                        file_size = os.path.getsize(actual_file_path)
-                        
-                        # Add metadata to MP3 file
-                        self._add_mp3_metadata(actual_file_path, info)
-                        
-                        print(f"Successfully downloaded: {title}")
-                        return {
-                            'video_id': video_id,
-                            'title': title,
-                            'uploader': info.get('uploader', 'Unknown'),
-                            'duration': info.get('duration', 0),
-                            'upload_date': info.get('upload_date', ''),
-                            'file_path': actual_file_path,
-                            'file_hash': file_hash,
-                            'file_size': file_size,
-                            'status': 'downloaded',
-                            'metadata': {
-                                'description': info.get('description', ''),
-                                'view_count': info.get('view_count', 0),
-                                'like_count': info.get('like_count', 0),
-                                'channel': info.get('channel', ''),
-                                'tags': info.get('tags', []),
-                                'availability': availability
-                            }
-                        }
-                    else:
-                        print(f"Download completed but file not found: {file_path}")
-                        last_error = f"File not found after download: {file_path}"
-                        continue
-                        
-            except Exception as e:
-                print(f"Strategy {i+1} failed for {video_id}: {e}")
-                last_error = e
-                continue
+                    if i < 3:
+                        print(f"✅ Entry {i+1}: {video_entry['title']}")
+                
+                result = {'title': info.get('title', 'Unknown Playlist'), 'entries': entries}
+                print(f"✅ Successfully extracted {len(entries)} videos")
+                return result
+                
+        except Exception as e:
+            print(f"❌ Failed to extract playlist: {e}")
+            return {'title': None, 'entries': []}
+
+    def download_video(self, video_url: str, video_id: str) -> Optional[Dict]:
+        """Download video with configurable delay after success"""
+        print(f"🎵 Downloading video: {video_id}")
         
-        # All strategies failed - return failed status with last error
-        print(f"All download strategies failed for {video_id}. Last error: {last_error}")
+        clean_url = video_url.replace('music.youtube.com', 'www.youtube.com')
+        safe_title = self._sanitize_filename(f"video_{video_id}")
         
-        return {
-            'video_id': video_id,
-            'title': f'Failed: {video_id}',
-            'uploader': 'Unknown',
-            'duration': 0,
-            'upload_date': '',
-            'file_path': None,
-            'file_hash': None,
-            'file_size': 0,
-            'status': 'failed',
-            'metadata': {'error': str(last_error) if last_error else 'Unknown error'}
+        # Correct yt-dlp options from official docs
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '0',  # Best quality auto-determined
+            }],
+            'ignoreerrors': True,
+            'no_warnings': False,
+            'quiet': False,
         }
-    
-    def _find_downloaded_file(self, expected_path: str, safe_title: str) -> Optional[str]:
-        """Find the actual downloaded file (yt-dlp sometimes changes extensions)"""
-        possible_paths = [
-            expected_path,
-            expected_path.replace('.mp3', '.m4a'),
-            expected_path.replace('.mp3', '.webm'),
-            expected_path.replace('.mp3', '.opus'),
-            expected_path.replace('.mp3', '.mp4'),
-            os.path.join(self.download_dir, f"{safe_title}.mp3"),
-            os.path.join(self.download_dir, f"{safe_title}.m4a"),
-            os.path.join(self.download_dir, f"{safe_title}.webm"),
-            os.path.join(self.download_dir, f"{safe_title}.opus"),
+        
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                # Extract info first
+                print(f"📋 Extracting info for {video_id}...")
+                info = ydl.extract_info(clean_url, download=False)
+                
+                # Type checking
+                if not info or not isinstance(info, dict):
+                    print(f"❌ Invalid info for {video_id}")
+                    return None  # FAIL: No wait, jump to next
+                
+                # Check availability
+                availability = info.get('availability', 'public')
+                if availability in ['private', 'subscriber_only', 'premium_only', 'needs_auth']:
+                    print(f"🔒 Video {video_id} requires authentication: {availability}")
+                    return None  # FAIL: No wait, jump to next
+                
+                title = info.get('title', f'video_{video_id}')
+                print(f"📥 Downloading: {title}")
+                
+                # Download the video
+                ydl.download([clean_url])
+                
+                # Find downloaded file (yt-dlp creates .mp3 via postprocessor)
+                actual_file_path = self._find_downloaded_file(title, safe_title)
+                
+                if actual_file_path and os.path.exists(actual_file_path):
+                    file_size = os.path.getsize(actual_file_path)
+                    file_hash = self._calculate_file_hash(actual_file_path)
+                    
+                    # Add metadata (file is already MP3)
+                    self._add_mp3_metadata(actual_file_path, info)
+                    
+                    print(f"✅ Successfully downloaded: {title} ({file_size} bytes)")
+                    
+                    # SUCCESS: Configurable wait before next download
+                    if self.config.DOWNLOAD_DELAY_ENABLED:
+                        wait_time = random.uniform(self.config.DOWNLOAD_DELAY_MIN, self.config.DOWNLOAD_DELAY_MAX)
+                        print(f"⏰ SUCCESS - Delay enabled, waiting {wait_time:.1f} seconds before next download...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"⚡ SUCCESS - Delay disabled (DOWNLOAD_DELAY_ENABLED={self.config.DOWNLOAD_DELAY_ENABLED}), continuing immediately")
+                    
+                    return {
+                        'video_id': video_id,
+                        'title': title,
+                        'uploader': info.get('uploader', 'Unknown'),
+                        'duration': info.get('duration', 0),
+                        'upload_date': info.get('upload_date', ''),
+                        'file_path': actual_file_path,
+                        'file_hash': file_hash,
+                        'file_size': file_size,
+                        'status': 'downloaded',
+                        'metadata': {
+                            'description': info.get('description', ''),
+                            'view_count': info.get('view_count', 0),
+                        }
+                    }
+                else:
+                    print(f"❌ File not found after download for {video_id}")
+                    return None  # FAIL: No wait, jump to next
+                    
+        except Exception as e:
+            print(f"❌ Download failed for {video_id}: {e}")
+            return None  # FAIL: No wait, jump to next
+
+    def _find_downloaded_file(self, title: str, safe_title: str) -> Optional[str]:
+        """Find the downloaded MP3 file"""
+        # yt-dlp with FFmpegExtractAudio creates .mp3 files
+        possible_names = [
+            self._sanitize_filename(title) + '.mp3',
+            safe_title + '.mp3',
+            f"video_{safe_title}.mp3"
         ]
         
-        for path in possible_paths:
-            if os.path.exists(path):
-                # If it's not mp3, try to rename it
-                if not path.endswith('.mp3'):
-                    new_path = path.rsplit('.', 1)[0] + '.mp3'
-                    try:
-                        os.rename(path, new_path)
-                        return new_path
-                    except:
-                        return path
-                return path
+        for name in possible_names:
+            full_path = os.path.join(self.download_dir, name)
+            if os.path.exists(full_path):
+                return full_path
         
-        # If still not found, search directory for files with similar names
+        # Search directory for any MP3 files containing the video ID or title
         try:
             for file in os.listdir(self.download_dir):
-                if safe_title in file and file.endswith(('.mp3', '.m4a', '.webm', '.opus')):
+                if file.endswith('.mp3') and (safe_title in file or title[:20] in file):
                     return os.path.join(self.download_dir, file)
         except:
             pass
         
         return None
-    
+
     def _sanitize_filename(self, filename: str) -> str:
-        """Remove invalid characters from filename"""
+        """Clean filename for filesystem"""
+        if not filename or not isinstance(filename, str):
+            return 'unknown'
+        
         invalid_chars = '<>:"/\\|?*'
         for char in invalid_chars:
             filename = filename.replace(char, '_')
         
-        # Remove multiple spaces and trim
         filename = ' '.join(filename.split())
-        
-        # Limit length and remove trailing dots/spaces
         filename = filename[:200].strip('. ')
         
-        # Ensure filename is not empty
-        if not filename:
-            filename = 'unknown'
-        
-        return filename
-    
-    def _calculate_file_hash(self, file_path: str) -> str:
-        """Calculate SHA-256 hash of file for duplicate detection"""
-        if not os.path.exists(file_path):
+        return filename if filename else 'unknown'
+
+    def _calculate_file_hash(self, file_path: str) -> Optional[str]:
+        """Calculate file hash"""
+        if not file_path or not os.path.exists(file_path):
             return None
         
         try:
@@ -405,137 +224,40 @@ class YouTubeDownloader:
                     hash_sha256.update(chunk)
             return hash_sha256.hexdigest()
         except Exception as e:
-            print(f"Error calculating hash for {file_path}: {e}")
+            print(f"Hash calculation error: {e}")
             return None
-    
+
     def _add_mp3_metadata(self, file_path: str, info: Dict):
         """Add metadata to MP3 file"""
         try:
-            # Only try to add metadata to MP3 files
-            if not file_path.lower().endswith('.mp3'):
+            if not file_path or not file_path.lower().endswith('.mp3'):
+                return
+            
+            if not isinstance(info, dict):
                 return
             
             audio_file = MP3(file_path, ID3=ID3)
+            if audio_file.tags is None:
+                audio_file.add_tags()
             
-            # Add ID3 tag if it doesn't exist
-            try:
-                if audio_file.tags is None:
-                    audio_file.add_tags()
-            except:
-                return
+            # Safe metadata extraction
+            title = info.get('title')
+            if title and isinstance(title, str):
+                audio_file.tags.add(TIT2(encoding=3, text=title))
             
-            # Add metadata safely
-            try:
-                title = info.get('title', '')
-                if title:
-                    audio_file.tags.add(TIT2(encoding=3, text=title))
-            except:
-                pass
+            uploader = info.get('uploader')
+            if uploader and isinstance(uploader, str):
+                audio_file.tags.add(TPE1(encoding=3, text=uploader))
             
-            try:
-                uploader = info.get('uploader', '') or info.get('channel', '')
-                if uploader:
-                    audio_file.tags.add(TPE1(encoding=3, text=uploader))
-            except:
-                pass
+            audio_file.tags.add(TALB(encoding=3, text='YouTube Download'))
             
-            try:
-                audio_file.tags.add(TALB(encoding=3, text='YouTube Download'))
-            except:
-                pass
+            upload_date = info.get('upload_date')
+            if upload_date and isinstance(upload_date, str) and len(upload_date) >= 4:
+                year = upload_date[:4]
+                audio_file.tags.add(TDRC(encoding=3, text=year))
             
-            try:
-                upload_date = info.get('upload_date', '')
-                if upload_date and len(upload_date) >= 4:
-                    year = upload_date[:4]
-                    audio_file.tags.add(TDRC(encoding=3, text=year))
-            except:
-                pass
+            audio_file.save()
+            print(f"🏷️ Metadata added to: {os.path.basename(file_path)}")
             
-            # Save metadata
-            try:
-                audio_file.save()
-                print(f"Added metadata to: {os.path.basename(file_path)}")
-            except Exception as save_error:
-                print(f"Error saving metadata to {file_path}: {save_error}")
-                
         except Exception as e:
-            print(f"Error adding metadata to {file_path}: {e}")
-    
-    def get_video_info(self, video_url: str) -> Dict:
-        """Get video information without downloading"""
-        ydl_opts = {
-            **self.base_ydl_opts,
-            'quiet': True,
-            'no_warnings': True,
-        }
-        
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(video_url, download=False)
-                
-                if info:
-                    return {
-                        'id': info.get('id'),
-                        'title': info.get('title'),
-                        'uploader': info.get('uploader'),
-                        'duration': info.get('duration'),
-                        'upload_date': info.get('upload_date'),
-                        'view_count': info.get('view_count'),
-                        'like_count': info.get('like_count'),
-                        'description': info.get('description'),
-                        'availability': info.get('availability', 'public'),
-                        'tags': info.get('tags', [])
-                    }
-        except Exception as e:
-            print(f"Error getting video info: {e}")
-        
-        return {}
-    
-    def cleanup_partial_downloads(self):
-        """Clean up partial downloads and temporary files"""
-        try:
-            for file in os.listdir(self.download_dir):
-                file_path = os.path.join(self.download_dir, file)
-                
-                # Remove temporary files
-                if file.endswith(('.part', '.tmp', '.temp')):
-                    try:
-                        os.remove(file_path)
-                        print(f"Removed temporary file: {file}")
-                    except:
-                        pass
-                
-                # Remove very small files (likely failed downloads)
-                elif file.endswith(('.mp3', '.m4a', '.webm', '.opus')):
-                    try:
-                        if os.path.getsize(file_path) < 1024:  # Less than 1KB
-                            os.remove(file_path)
-                            print(f"Removed incomplete file: {file}")
-                    except:
-                        pass
-        except Exception as e:
-            print(f"Error during cleanup: {e}")
-    
-    def get_download_stats(self) -> Dict:
-        """Get statistics about downloaded files"""
-        try:
-            files = os.listdir(self.download_dir)
-            audio_files = [f for f in files if f.endswith(('.mp3', '.m4a', '.webm', '.opus'))]
-            
-            total_size = 0
-            for file in audio_files:
-                try:
-                    total_size += os.path.getsize(os.path.join(self.download_dir, file))
-                except:
-                    pass
-            
-            return {
-                'total_files': len(audio_files),
-                'total_size_bytes': total_size,
-                'total_size_mb': round(total_size / 1024 / 1024, 2),
-                'download_dir': self.download_dir
-            }
-        except Exception as e:
-            print(f"Error getting download stats: {e}")
-            return {'total_files': 0, 'total_size_bytes': 0, 'total_size_mb': 0}
+            print(f"Metadata error (non-critical): {e}")

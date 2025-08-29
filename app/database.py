@@ -8,7 +8,7 @@ class DatabaseManager:
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
         self.init_database()
-    
+
     def init_database(self):
         """Initialize database with required tables"""
         with sqlite3.connect(self.db_path) as conn:
@@ -54,7 +54,7 @@ class DatabaseManager:
                     FOREIGN KEY (playlist_id) REFERENCES playlists (id)
                 )
             ''')
-    
+
     def add_playlist(self, url: str, name: str = None):
         """Add a new playlist to monitor"""
         with sqlite3.connect(self.db_path) as conn:
@@ -66,23 +66,22 @@ class DatabaseManager:
                 conn.commit()
                 return cursor.lastrowid
             except sqlite3.IntegrityError:
-                # Playlist already exists, return existing ID
                 cursor = conn.execute('SELECT id FROM playlists WHERE url = ?', (url,))
                 result = cursor.fetchone()
                 return result[0] if result else None
-    
+
     def get_active_playlists(self):
         """Get all active playlists"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute('''
                 SELECT id, url, name, last_checked, created_date, active
-                FROM playlists 
-                WHERE active = 1 
+                FROM playlists
+                WHERE active = 1
                 ORDER BY created_date DESC
             ''')
             return [dict(row) for row in cursor.fetchall()]
-    
+
     def video_exists(self, video_id: str) -> bool:
         """Check if video already exists in database"""
         with sqlite3.connect(self.db_path) as conn:
@@ -91,15 +90,15 @@ class DatabaseManager:
                 (video_id,)
             )
             return cursor.fetchone() is not None
-    
+
     def add_video(self, video_data):
         """Add a new video to database"""
         with sqlite3.connect(self.db_path) as conn:
             try:
                 cursor = conn.execute('''
-                    INSERT INTO videos 
-                    (video_id, title, uploader, duration, upload_date, 
-                     playlist_id, file_path, metadata, file_hash, file_size, status)
+                    INSERT INTO videos
+                    (video_id, title, uploader, duration, upload_date,
+                    playlist_id, file_path, metadata, file_hash, file_size, status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     video_data['video_id'],
@@ -119,34 +118,37 @@ class DatabaseManager:
             except sqlite3.IntegrityError as e:
                 print(f"Error adding video {video_data.get('video_id', 'unknown')}: {e}")
                 return None
-    
-    def get_playlist_video_count(self, playlist_id: int) -> int:
-        """Get total video count for a playlist"""
+
+    def get_playlist_status_counts(self, playlist_id: int):
+        """Get status counts for a playlist"""
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                'SELECT COUNT(*) FROM videos WHERE playlist_id = ?',
-                (playlist_id,)
-            )
-            return cursor.fetchone()[0]
-    
-    def get_playlist_downloaded_count(self, playlist_id: int) -> int:
-        """Get downloaded video count for a playlist"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.execute(
-                'SELECT COUNT(*) FROM videos WHERE playlist_id = ? AND status = "downloaded" AND file_path IS NOT NULL',
-                (playlist_id,)
-            )
-            return cursor.fetchone()[0]
-    
+            conn.row_factory = sqlite3.Row
+            cursor = conn.execute('''
+                SELECT status, COUNT(*) as count 
+                FROM videos 
+                WHERE playlist_id = ? 
+                GROUP BY status
+            ''', (playlist_id,))
+            
+            results = {row['status']: row['count'] for row in cursor.fetchall()}
+            
+            return {
+                'downloaded': results.get('downloaded', 0),
+                'pending': results.get('pending', 0),
+                'failed': results.get('failed', 0),
+                'duplicate': results.get('duplicate', 0),
+                'total': sum(results.values())
+            }
+
     def get_recent_downloads(self, limit: int = 10):
         """Get recent downloads"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute('''
-                SELECT 
-                    v.title, 
-                    v.uploader, 
-                    v.download_date, 
+                SELECT
+                    v.title,
+                    v.uploader,
+                    v.download_date,
                     v.video_id,
                     v.duration,
                     v.file_path,
@@ -158,7 +160,7 @@ class DatabaseManager:
                 LIMIT ?
             ''', (limit,))
             return [dict(row) for row in cursor.fetchall()]
-    
+
     def deactivate_playlist(self, playlist_id: int):
         """Deactivate a playlist (soft delete)"""
         with sqlite3.connect(self.db_path) as conn:
@@ -167,12 +169,11 @@ class DatabaseManager:
                 (playlist_id,)
             )
             conn.commit()
-    
+
     def get_file_by_hash(self, file_hash: str):
         """Check if file with same hash exists (duplicate detection)"""
         if not file_hash:
             return None
-            
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute(
@@ -181,7 +182,7 @@ class DatabaseManager:
             )
             result = cursor.fetchone()
             return dict(result) if result else None
-    
+
     def update_playlist_check_time(self, playlist_id: int):
         """Update last checked time for playlist"""
         with sqlite3.connect(self.db_path) as conn:
@@ -190,13 +191,13 @@ class DatabaseManager:
                 (playlist_id,)
             )
             conn.commit()
-    
+
     def log_download_action(self, video_id: str, action: str, details: str = None, playlist_id: int = None, error_message: str = None):
         """Log download actions for debugging"""
         with sqlite3.connect(self.db_path) as conn:
             conn.execute('''
-                INSERT INTO download_history 
-                (video_id, playlist_id, action, details, error_message) 
+                INSERT INTO download_history
+                (video_id, playlist_id, action, details, error_message)
                 VALUES (?, ?, ?, ?, ?)
             ''', (video_id, playlist_id, action, details, error_message))
             conn.commit()

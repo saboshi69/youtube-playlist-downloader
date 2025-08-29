@@ -13,6 +13,9 @@ services:
       - DOWNLOAD_FORMAT=mp3
       - AUDIO_QUALITY=320
       - DATABASE_PATH=/app/data/downloads.db
+      - DOWNLOAD_DELAY_ENABLED=true     # Set to false to disable delays
+      - DOWNLOAD_DELAY_MIN=60           # Minimum delay in seconds (1 minute)
+      - DOWNLOAD_DELAY_MAX=120          # Maximum delay in seconds (2 minutes)
     networks:
       - youtube-downloader
     depends_on:
