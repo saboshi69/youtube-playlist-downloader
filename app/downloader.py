@@ -88,73 +88,83 @@ class YouTubeDownloader:
             return {'title': None, 'entries': []}
 
     def download_video(self, video_url: str, video_id: str) -> Optional[Dict]:
-        """Download video with configurable delay after success"""
+        """Download video with original language title and proper album metadata"""
         print(f"🎵 Downloading video: {video_id}")
         
         clean_url = video_url.replace('music.youtube.com', 'www.youtube.com')
         safe_title = self._sanitize_filename(f"video_{video_id}")
-        
-        # Correct yt-dlp options from official docs
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s'),
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '0',  # Best quality auto-determined
-            }],
-            'ignoreerrors': True,
-            'no_warnings': False,
-            'quiet': False,
-        }
-        
+
         try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
                 # Extract info first
                 print(f"📋 Extracting info for {video_id}...")
                 info = ydl.extract_info(clean_url, download=False)
-                
-                # Type checking
+
                 if not info or not isinstance(info, dict):
                     print(f"❌ Invalid info for {video_id}")
-                    return None  # FAIL: No wait, jump to next
-                
+                    return None
+
                 # Check availability
                 availability = info.get('availability', 'public')
                 if availability in ['private', 'subscriber_only', 'premium_only', 'needs_auth']:
                     print(f"🔒 Video {video_id} requires authentication: {availability}")
-                    return None  # FAIL: No wait, jump to next
-                
+                    return None
+
+                # Get original title and metadata
                 title = info.get('title', f'video_{video_id}')
+                album = info.get('album') or info.get('playlist_title') or 'Unknown Album'
+                uploader = info.get('uploader', 'Unknown Artist')
+                
                 print(f"📥 Downloading: {title}")
-                
+                print(f"🏷️ Album: {album}")
+
+                # yt-dlp options with proper metadata
+                ydl_opts = {
+                    'format': 'bestaudio/best',
+                    'outtmpl': os.path.join(self.download_dir, '%(title)s.%(ext)s'),  # Original title
+                    'postprocessors': [{
+                        'key': 'FFmpegExtractAudio',
+                        'preferredcodec': 'mp3',
+                        'preferredquality': '0',
+                    }],
+                    'postprocessor_args': [
+                        '-metadata', f'album={album}',
+                        '-metadata', f'artist={uploader}',
+                        '-metadata', f'title={title}'
+                    ],
+                    'ignoreerrors': True,
+                    'no_warnings': False,
+                    'quiet': False,
+                }
+
                 # Download the video
-                ydl.download([clean_url])
-                
-                # Find downloaded file (yt-dlp creates .mp3 via postprocessor)
+                with yt_dlp.YoutubeDL(ydl_opts) as download_ydl:
+                    download_ydl.download([clean_url])
+
+                # Find downloaded file
                 actual_file_path = self._find_downloaded_file(title, safe_title)
-                
+
                 if actual_file_path and os.path.exists(actual_file_path):
                     file_size = os.path.getsize(actual_file_path)
                     file_hash = self._calculate_file_hash(actual_file_path)
-                    
-                    # Add metadata (file is already MP3)
-                    self._add_mp3_metadata(actual_file_path, info)
-                    
+
+                    # Add additional metadata with mutagen (using dynamic album name)
+                    self._add_mp3_metadata(actual_file_path, info, album)
+
                     print(f"✅ Successfully downloaded: {title} ({file_size} bytes)")
-                    
+
                     # SUCCESS: Configurable wait before next download
                     if self.config.DOWNLOAD_DELAY_ENABLED:
                         wait_time = random.uniform(self.config.DOWNLOAD_DELAY_MIN, self.config.DOWNLOAD_DELAY_MAX)
                         print(f"⏰ SUCCESS - Delay enabled, waiting {wait_time:.1f} seconds before next download...")
                         time.sleep(wait_time)
                     else:
-                        print(f"⚡ SUCCESS - Delay disabled (DOWNLOAD_DELAY_ENABLED={self.config.DOWNLOAD_DELAY_ENABLED}), continuing immediately")
-                    
+                        print(f"⚡ SUCCESS - Delay disabled, continuing immediately")
+
                     return {
                         'video_id': video_id,
                         'title': title,
-                        'uploader': info.get('uploader', 'Unknown'),
+                        'uploader': uploader,
                         'duration': info.get('duration', 0),
                         'upload_date': info.get('upload_date', ''),
                         'file_path': actual_file_path,
@@ -164,15 +174,17 @@ class YouTubeDownloader:
                         'metadata': {
                             'description': info.get('description', ''),
                             'view_count': info.get('view_count', 0),
+                            'album': album
                         }
                     }
                 else:
                     print(f"❌ File not found after download for {video_id}")
-                    return None  # FAIL: No wait, jump to next
-                    
+                    return None
+
         except Exception as e:
             print(f"❌ Download failed for {video_id}: {e}")
-            return None  # FAIL: No wait, jump to next
+            return None
+
 
     def _find_downloaded_file(self, title: str, safe_title: str) -> Optional[str]:
         """Find the downloaded MP3 file"""
@@ -227,37 +239,39 @@ class YouTubeDownloader:
             print(f"Hash calculation error: {e}")
             return None
 
-    def _add_mp3_metadata(self, file_path: str, info: Dict):
-        """Add metadata to MP3 file"""
+    def _add_mp3_metadata(self, file_path: str, info: Dict, album_name: str):
+        """Add metadata to MP3 file with proper album name"""
         try:
             if not file_path or not file_path.lower().endswith('.mp3'):
                 return
-            
+
             if not isinstance(info, dict):
                 return
-            
+
             audio_file = MP3(file_path, ID3=ID3)
             if audio_file.tags is None:
                 audio_file.add_tags()
-            
-            # Safe metadata extraction
+
+            # Safe metadata extraction with original language
             title = info.get('title')
             if title and isinstance(title, str):
                 audio_file.tags.add(TIT2(encoding=3, text=title))
-            
+
             uploader = info.get('uploader')
             if uploader and isinstance(uploader, str):
                 audio_file.tags.add(TPE1(encoding=3, text=uploader))
-            
-            audio_file.tags.add(TALB(encoding=3, text='YouTube Download'))
-            
+
+            # Use dynamic album name instead of hardcoded 'YouTube Download'
+            audio_file.tags.add(TALB(encoding=3, text=album_name))
+
             upload_date = info.get('upload_date')
             if upload_date and isinstance(upload_date, str) and len(upload_date) >= 4:
                 year = upload_date[:4]
                 audio_file.tags.add(TDRC(encoding=3, text=year))
-            
+
             audio_file.save()
-            print(f"🏷️ Metadata added to: {os.path.basename(file_path)}")
-            
+            print(f"🏷️ Metadata added to: {os.path.basename(file_path)} (Album: {album_name})")
+
         except Exception as e:
             print(f"Metadata error (non-critical): {e}")
+

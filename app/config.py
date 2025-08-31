@@ -3,7 +3,7 @@ from typing import List
 
 class Config:
     DATABASE_PATH = os.getenv('DATABASE_PATH', '/app/data/downloads.db')
-    DOWNLOAD_DIR = '/downloads/music'
+    DOWNLOAD_DIR = '/downloads'
     CHECK_INTERVAL = int(os.getenv('CHECK_INTERVAL', 3600))  # seconds
     DOWNLOAD_FORMAT = os.getenv('DOWNLOAD_FORMAT', 'mp3')
     AUDIO_QUALITY = os.getenv('AUDIO_QUALITY', '320')
