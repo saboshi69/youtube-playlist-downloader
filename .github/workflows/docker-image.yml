@@ -1,0 +1,24 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build the Docker image
+      run: docker build -t saboshi69/youtube-playlist-downloader:$(date +%s)
+    - name: Tag as Latest
+      run: docker tag saboshi69/youtube-playlist-downloader:$(date +%s) saboshi69/youtube-playlist-downloader:latest
+    - name: push image to docker hub
+      run: docker push saboshi69/youtube-playlist-downloader:$(date +%s)
+    - name: push image latest to docker hub
+      run:  saboshi69/youtube-playlist-downloader:latest
