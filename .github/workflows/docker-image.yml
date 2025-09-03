@@ -7,20 +7,27 @@ on:
     branches: [ "main" ]
 
 jobs:
-
   build:
-
     runs-on: ubuntu-latest
-
+    
     steps:
     - uses: actions/checkout@v4
+    
+    - name: Generate timestamp
+      id: timestamp
+      run: echo "timestamp=$(date +%s)" >> $GITHUB_OUTPUT
+    
     - name: Build the Docker image
-      run: docker build -t saboshi69/youtube-playlist-downloader:$(date +%s) .
+      run: docker build -t saboshi69/youtube-playlist-downloader:${{ steps.timestamp.outputs.timestamp }} .
+    
     - name: Tag as Latest
-      run: docker tag docker.io/saboshi69/youtube-playlist-downloader:$(date +%s) docker.io/saboshi69/youtube-playlist-downloader:latest
+      run: docker tag saboshi69/youtube-playlist-downloader:${{ steps.timestamp.outputs.timestamp }} saboshi69/youtube-playlist-downloader:latest
+    
     - name: Login to Docker hub
-      run: docker login -u saboshi69 -p ${{secrets.DOCKER_HUB_TOKEN}}
-    - name: push image to docker hub
-      run: docker push docker.io/saboshi69/youtube-playlist-downloader:$(date +%s)
-    - name: push image latest to docker hub
-      run: docker push docker.io/saboshi69/youtube-playlist-downloader:latest
+      run: docker login -u saboshi69 -p ${{ secrets.DOCKER_HUB_TOKEN }}
+    
+    - name: Push timestamped image to docker hub
+      run: docker push saboshi69/youtube-playlist-downloader:${{ steps.timestamp.outputs.timestamp }}
+    
+    - name: Push latest image to docker hub
+      run: docker push saboshi69/youtube-playlist-downloader:latest
