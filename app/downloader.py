@@ -112,11 +112,11 @@ class YouTubeDownloader:
 
                 # Get original title and metadata
                 title = info.get('title', f'video_{video_id}')
-                album = info.get('album') or info.get('playlist_title') or 'Unknown Album'
+                album_name = info.get('album') or info.get('playlist_title') or 'Unknown Album'
                 uploader = info.get('uploader', 'Unknown Artist')
                 
                 print(f"📥 Downloading: {title}")
-                print(f"🏷️ Album: {album}")
+                print(f"🏷️ Album: {album_name}")
 
                 # yt-dlp options with proper metadata
                 ydl_opts = {
@@ -128,7 +128,7 @@ class YouTubeDownloader:
                         'preferredquality': '0',
                     }],
                     'postprocessor_args': [
-                        '-metadata', f'album={album}',
+                        '-metadata', f'album={album_name}',
                         '-metadata', f'artist={uploader}',
                         '-metadata', f'title={title}'
                     ],
@@ -149,7 +149,7 @@ class YouTubeDownloader:
                     file_hash = self._calculate_file_hash(actual_file_path)
 
                     # Add additional metadata with mutagen (using dynamic album name)
-                    self._add_mp3_metadata(actual_file_path, info, album)
+                    self._add_mp3_metadata(actual_file_path, info, album_name)
 
                     print(f"✅ Successfully downloaded: {title} ({file_size} bytes)")
 
@@ -174,7 +174,7 @@ class YouTubeDownloader:
                         'metadata': {
                             'description': info.get('description', ''),
                             'view_count': info.get('view_count', 0),
-                            'album': album
+                            'album': album_name
                         }
                     }
                 else:
@@ -184,6 +184,7 @@ class YouTubeDownloader:
         except Exception as e:
             print(f"❌ Download failed for {video_id}: {e}")
             return None
+
 
 
     def _find_downloaded_file(self, title: str, safe_title: str) -> Optional[str]:
@@ -274,4 +275,5 @@ class YouTubeDownloader:
 
         except Exception as e:
             print(f"Metadata error (non-critical): {e}")
+
 
