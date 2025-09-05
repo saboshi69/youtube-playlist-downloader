@@ -16,22 +16,10 @@ services:
       - AUDIO_QUALITY=320
       - DATABASE_PATH=/app/data/downloads.db
       - DOWNLOAD_DELAY_ENABLED=true     # Set to false to disable delays
-      - DOWNLOAD_DELAY_MIN=60           # Minimum delay in seconds (1 minute)
-      - DOWNLOAD_DELAY_MAX=120          # Maximum delay in seconds (2 minutes)
+      - DOWNLOAD_DELAY_MIN=30           # Minimum delay in seconds 
+      - DOWNLOAD_DELAY_MAX=100          # Maximum delay in seconds 
     networks:
       - youtube-downloader
-
-  redis:
-    image: redis:7-alpine
-    container_name: youtube-redis
-    restart: unless-stopped
-    volumes:
-      - redis_data:/data
-    networks:
-      - youtube-downloader
-
-volumes:
-  redis_data:
 
 networks:
   youtube-downloader:

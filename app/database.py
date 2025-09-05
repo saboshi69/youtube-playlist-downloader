@@ -4,6 +4,7 @@ import os
 from datetime import datetime
 
 class DatabaseManager:
+
     def __init__(self, db_path: str):
         self.db_path = db_path
         os.makedirs(os.path.dirname(db_path), exist_ok=True)
@@ -22,7 +23,6 @@ class DatabaseManager:
                     created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
-            
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS videos (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -41,7 +41,6 @@ class DatabaseManager:
                     FOREIGN KEY (playlist_id) REFERENCES playlists (id)
                 )
             ''')
-            
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS download_history (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -100,7 +99,6 @@ class DatabaseManager:
             )
             return cursor.fetchone() is not None
 
-
     def get_pending_videos(self, playlist_id: int = None):
         """Get all pending videos, optionally filtered by playlist"""
         with sqlite3.connect(self.db_path) as conn:
@@ -108,14 +106,14 @@ class DatabaseManager:
             if playlist_id:
                 cursor = conn.execute('''
                     SELECT video_id, title, playlist_id
-                    FROM videos 
+                    FROM videos
                     WHERE status = 'pending' AND playlist_id = ?
                     ORDER BY id ASC
                 ''', (playlist_id,))
             else:
                 cursor = conn.execute('''
                     SELECT video_id, title, playlist_id
-                    FROM videos 
+                    FROM videos
                     WHERE status = 'pending'
                     ORDER BY id ASC
                 ''')
@@ -128,7 +126,7 @@ class DatabaseManager:
                 cursor = conn.execute('''
                     INSERT INTO videos
                     (video_id, title, uploader, duration, upload_date,
-                    playlist_id, file_path, metadata, file_hash, file_size, status)
+                     playlist_id, file_path, metadata, file_hash, file_size, status)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     video_data['video_id'],
@@ -149,19 +147,66 @@ class DatabaseManager:
                 print(f"Error adding video {video_data.get('video_id', 'unknown')}: {e}")
                 return None
 
+    # NEW BATCH INSERT METHODS
+    def add_videos_batch(self, videos_data: list) -> int:
+        """BATCH INSERT: Add multiple videos in one transaction"""
+        with sqlite3.connect(self.db_path) as conn:
+            try:
+                cursor = conn.cursor()
+                sql = '''INSERT OR IGNORE INTO videos
+                (video_id, title, uploader, duration, upload_date,
+                 playlist_id, file_path, metadata, file_hash, file_size, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'''
+                
+                batch_data = []
+                for video_data in videos_data:
+                    row = (
+                        video_data['video_id'],
+                        video_data.get('title', ''),
+                        video_data.get('uploader', ''),
+                        video_data.get('duration', 0),
+                        video_data.get('upload_date', ''),
+                        video_data['playlist_id'],
+                        video_data.get('file_path', ''),
+                        json.dumps(video_data.get('metadata', {})),
+                        video_data.get('file_hash', ''),
+                        video_data.get('file_size', 0),
+                        video_data.get('status', 'pending')
+                    )
+                    batch_data.append(row)
+                
+                cursor.executemany(sql, batch_data)
+                conn.commit()
+                print(f"✅ [BATCH] Inserted {len(batch_data)} videos to database")
+                return cursor.rowcount
+                
+            except sqlite3.IntegrityError as e:
+                print(f"Error in batch insert: {e}")
+                return 0
+
+    def update_video_metadata_enriched(self, video_id: str, enriched_metadata: dict):
+        """Update video metadata with enriched data"""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute('''
+                UPDATE videos 
+                SET metadata = ?
+                WHERE video_id = ?
+            ''', (json.dumps(enriched_metadata), video_id))
+            conn.commit()
+            print(f"✅ [ENRICH] Updated enriched metadata for {video_id}")
+
+    # EXISTING METHODS CONTINUE BELOW
     def get_playlist_status_counts(self, playlist_id: int):
         """Get status counts for a playlist"""
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.execute('''
-                SELECT status, COUNT(*) as count 
-                FROM videos 
-                WHERE playlist_id = ? 
+                SELECT status, COUNT(*) as count
+                FROM videos
+                WHERE playlist_id = ?
                 GROUP BY status
             ''', (playlist_id,))
-            
             results = {row['status']: row['count'] for row in cursor.fetchall()}
-            
             return {
                 'downloaded': results.get('downloaded', 0),
                 'pending': results.get('pending', 0),
