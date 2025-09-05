@@ -32,16 +32,23 @@
                 <h2>Add New Playlist</h2>
                 <form id="playlist-form">
                     <div class="form-group">
-                        <label for="playlist-url">YouTube Playlist URL:</label>
-                        <input type="url" id="playlist-url" placeholder="https://www.youtube.com/playlist?list=..." required>
+                        <label for="url">Playlist URL</label>
+                        <input type="text" 
+                            id="url" 
+                            name="url" 
+                            placeholder="https://www.youtube.com/playlist?list=..."
+                            required />
                     </div>
                     <div class="form-group">
-                        <label for="playlist-name">Custom Name (optional):</label>
-                        <input type="text" id="playlist-name" placeholder="My Awesome Playlist">
+                        <label for="name">Playlist Name (optional)</label>
+                        <input type="text" 
+                            id="name" 
+                            name="name" 
+                            placeholder="My Playlist" />
                     </div>
                     <button type="submit" class="btn btn-primary">Add Playlist</button>
-                    <button type="button" id="check-now" class="btn btn-secondary">Check All Now</button>
                 </form>
+
             </section>
 
             <!-- Current Activity -->

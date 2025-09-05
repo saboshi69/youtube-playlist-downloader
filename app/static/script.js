@@ -200,10 +200,18 @@ class PlaylistDownloader {
         const submitButton = form.querySelector('button[type="submit"]');
         const originalText = submitButton.textContent;
 
+        // DEBUG: Log all form data to see what's actually there
+        console.log('=== FormData Debug ===');
+        for (let [key, value] of formData.entries()) {
+            console.log(`${key}: ${value}`);
+        }
+
         // Validate URL
         const url = formData.get('url');
-        if (!url || !url.includes('youtube.com/playlist')) {
-            this.showMessage('Please enter a valid YouTube playlist URL', 'error');
+        console.log('URL value:', url);
+        
+        if (!url || !url.includes('list=')) {
+            this.showMessage('Please enter a valid YouTube playlist URL (must contain "list=")', 'error');
             return;
         }
 
@@ -213,7 +221,9 @@ class PlaylistDownloader {
         try {
             const response = await fetch('/api/playlists', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: {
+                    'Content-Type': 'application/json'
+                },
                 body: JSON.stringify({
                     url: formData.get('url'),
                     name: formData.get('name') || 'Untitled Playlist'
@@ -226,7 +236,7 @@ class PlaylistDownloader {
                 this.showMessage(`✅ Playlist "${result.playlist_name}" added! Processing ${result.total_videos} videos in background.`, 'success');
                 form.reset();
                 
-                // Immediately show processing activity
+                // Update UI
                 document.getElementById('current-activity').textContent = `Processing new playlist: ${result.playlist_name}`;
                 this.isProcessing = true;
                 
@@ -238,12 +248,14 @@ class PlaylistDownloader {
                 this.showMessage(`❌ ${result.detail || 'Error adding playlist'}`, 'error');
             }
         } catch (error) {
+            console.error('Network error:', error);
             this.showMessage('❌ Network error: ' + error.message, 'error');
         } finally {
             submitButton.disabled = false;
             submitButton.textContent = originalText;
         }
     }
+
 
     showMessage(message, type) {
         // Remove existing messages
