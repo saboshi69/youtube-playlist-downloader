@@ -15,12 +15,12 @@ class PlaylistMonitor:
         self.config = Config()
         self.running = False
 
-        # Concurrency control locks
-        self._check_lock = threading.Lock()
-        self._is_checking = False
-        self._initial_check_lock = threading.Lock()
-        self._is_initial_checking = False
-
+        # FIXED: Single master lock for ALL operations
+        self._master_lock = threading.RLock()  # Reentrant lock
+        self._is_checking = False              # Interval monitor running
+        self._is_initial_checking = False      # Initial import running
+        self._is_downloading = False           # Download process running
+        
         # Track what's being processed to prevent duplicates
         self._processing_videos = set()
         self._processing_lock = threading.Lock()
@@ -38,43 +38,60 @@ class PlaylistMonitor:
         print("✅ Playlist monitoring stopped")
 
     def _monitor_loop(self):
-        """Main monitoring loop with concurrency control"""
+        """FIXED: Interval monitor that properly skips when other operations are running"""
         while self.running:
             try:
-                with self._check_lock:
-                    if self._is_checking:
-                        print("⚠️ Scheduled check skipped - manual check in progress")
+                # FIXED: Check if ANY operation is running before starting
+                with self._master_lock:
+                    if self._is_checking or self._is_initial_checking or self._is_downloading:
+                        operation_type = (
+                            "interval check" if self._is_checking else
+                            "initial import" if self._is_initial_checking else
+                            "downloading" if self._is_downloading else "unknown"
+                        )
+                        print(f"⚠️ [MONITOR] Scheduled check skipped - {operation_type} in progress")
                         time.sleep(self.config.CHECK_INTERVAL)
                         continue
+
+                    # Mark that interval check is starting
                     self._is_checking = True
+                    print("🔄 [MONITOR] Starting scheduled interval check")
 
                 try:
                     total_new = self.check_all_playlists()
-                    print(f"✅ Scheduled monitor check completed: {total_new} new videos")
+                    print(f"✅ [MONITOR] Scheduled check completed: {total_new} new videos")
                 finally:
-                    with self._check_lock:
+                    # Always clear the checking flag
+                    with self._master_lock:
                         self._is_checking = False
 
                 time.sleep(self.config.CHECK_INTERVAL)
+
             except Exception as e:
-                print(f"❌ Error in monitoring loop: {e}")
-                with self._check_lock:
+                print(f"❌ [MONITOR] Error in monitoring loop: {e}")
+                with self._master_lock:
                     self._is_checking = False
-                time.sleep(60)
+                time.sleep(60)  # Wait before retry on error
 
     def trigger_manual_check(self):
-        """Trigger manual check with concurrency protection"""
-        with self._check_lock:
-            if self._is_checking:
+        """FIXED: Manual check that properly respects other operations"""
+        with self._master_lock:
+            if self._is_checking or self._is_initial_checking or self._is_downloading:
+                operation_type = (
+                    "interval monitor" if self._is_checking else
+                    "initial import" if self._is_initial_checking else
+                    "downloading" if self._is_downloading else "unknown"
+                )
                 return {
                     "success": False,
-                    "message": "Check already in progress. Please wait...",
+                    "message": f"Check already in progress ({operation_type}). Please wait...",
                     "status": "already_running"
                 }
+
             self._is_checking = True
+            print("🔄 [MANUAL] Manual check triggered")
 
         try:
-            print("🔄 Manual check triggered")
             total_new = self.check_all_playlists()
             return {
                 "success": True,
@@ -83,14 +100,14 @@ class PlaylistMonitor:
                 "status": "completed"
             }
         except Exception as e:
-            print(f"❌ Manual check failed: {e}")
+            print(f"❌ [MANUAL] Manual check failed: {e}")
             return {
                 "success": False,
                 "message": f"Check failed: {str(e)}",
                 "status": "failed"
             }
         finally:
-            with self._check_lock:
+            with self._master_lock:
                 self._is_checking = False
 
     def check_all_playlists(self):
@@ -99,38 +116,39 @@ class PlaylistMonitor:
         total_new = 0
 
         for playlist in playlists:
-            print(f"🔍 Checking playlist: {playlist['name'] or playlist['url']}")
+            print(f"🔍 [CHECK] Checking playlist: {playlist['name'] or playlist['url']}")
             new_count = self.check_playlist(playlist)
             total_new += new_count
 
         return total_new
 
     def perform_full_playlist_import(self, playlist_id: int, playlist_url: str):
-        """Complete dual-source playlist import workflow"""
-        with self._initial_check_lock:
-            if self._is_initial_checking:
-                print("⚠️ Another initial check in progress, queuing...")
-                time.sleep(5)
-                with self._initial_check_lock:
-                    if self._is_initial_checking:
-                        return 0, 0, 1
-            self._is_initial_checking = True
+        """FIXED: Initial import that properly blocks all other operations"""
+        with self._master_lock:
+            if self._is_checking or self._is_initial_checking or self._is_downloading:
+                operation_type = (
+                    "interval monitor" if self._is_checking else
+                    "another initial import" if self._is_initial_checking else
+                    "downloading" if self._is_downloading else "unknown"
+                )
+                print(f"⚠️ [IMPORT] Another operation in progress ({operation_type}), waiting...")
+                return 0, 0, 1
 
-        try:
+            self._is_initial_checking = True
             print(f"🚀 [IMPORT] Starting full dual-source import for playlist {playlist_id}")
 
+        try:
             # Step 1: Get dual-source playlist data
             playlist_info = self.downloader.get_playlist_dual_source(playlist_url)
-            
             if not playlist_info or not playlist_info.get('entries'):
                 raise Exception("No tracks found in playlist")
 
-            # Step 2: Prepare and batch insert video data
+            # Step 2: Prepare and batch insert video data WITHOUT downloading
             videos_data = []
             for entry in playlist_info['entries']:
                 if not entry.get('id'):
                     continue
-                    
+
                 video_data = {
                     'video_id': entry['id'],
                     'title': entry.get('title', 'Unknown Title'),
@@ -151,195 +169,205 @@ class PlaylistMonitor:
 
             # Step 3: Batch upsert to database
             inserted_count = self.db_manager.upsert_videos_batch(videos_data)
+            print(f"✅ [IMPORT] Stored {inserted_count} tracks in database")
 
-            # Step 4: Process downloads for pending videos
-            downloaded_count = self.process_pending_downloads(playlist_id)
+            # FIXED: Mark as downloading to prevent conflicts during download phase
+            with self._master_lock:
+                self._is_downloading = True
 
-            print(f"✅ [IMPORT] Complete: {inserted_count} tracks stored, {downloaded_count} downloaded")
-            return len(videos_data), downloaded_count, 0
+            try:
+                # Step 4: Process downloads for pending videos
+                downloaded_count = self.process_pending_downloads(playlist_id)
+                print(f"✅ [IMPORT] Complete: {inserted_count} tracks stored, {downloaded_count} downloaded")
+                return len(videos_data), downloaded_count, 0
+            finally:
+                with self._master_lock:
+                    self._is_downloading = False
 
         except Exception as e:
             print(f"❌ [IMPORT] Failed: {e}")
             return 0, 0, 1
         finally:
-            with self._initial_check_lock:
+            with self._master_lock:
                 self._is_initial_checking = False
 
-    def process_pending_downloads(self, playlist_id: int = None, max_concurrent: int = 3):
-        """Process downloads for pending tracks only"""
+    def process_pending_downloads(self, playlist_id: int = None, max_concurrent: int = 1):
+        """FIXED: Process downloads with proper concurrency control"""
+        # Get pending videos that aren't being processed
         pending_videos = self.db_manager.get_videos_by_status('pending', playlist_id)
         
         if not pending_videos:
-            print("📭 No pending downloads")
+            print("📭 [DOWNLOAD] No pending downloads")
             return 0
-            
-        print(f"📋 Processing {len(pending_videos)} pending downloads")
+
+        print(f"📋 [DOWNLOAD] Processing {len(pending_videos)} pending downloads")
         downloaded_count = 0
-        
+
         for i, video in enumerate(pending_videos):
             video_id = video['video_id']
-            
-            # Check if already being processed (safety check)
-            current_status = self.db_manager.get_video_status(video_id)
-            if current_status != 'pending':
-                continue
-                
+
+            # FIXED: Skip if already being processed or status changed
+            with self._processing_lock:
+                if video_id in self._processing_videos:
+                    print(f"⚠️ [DOWNLOAD] Video {video_id} already being processed, skipping")
+                    continue
+
+                # Double-check database status
+                current_status = self.db_manager.get_video_status(video_id)
+                if current_status != 'pending':
+                    print(f"⚠️ [DOWNLOAD] Video {video_id} status changed to '{current_status}', skipping")
+                    continue
+
+                # Add to processing set
+                self._processing_videos.add(video_id)
+
             print(f"[{i+1}/{len(pending_videos)}] Downloading: {video['title']} ({video_id})")
-            
-            # Update status to processing
-            self.db_manager.update_video_status(video_id, 'processing')
-            
+
             try:
+                # Update status to processing
+                self.db_manager.update_video_status(video_id, 'processing')
+
                 # Perform download using database metadata
                 result = self.downloader.download_video(
-                    f"https://www.youtube.com/watch?v={video_id}", 
-                    video_id, 
+                    f"https://www.youtube.com/watch?v={video_id}",
+                    video_id,
                     playlist_id
                 )
-                
+
                 if result and result.get('status') == 'downloaded':
-                    # Update with download results
+                    # FIXED: Check for duplicates BEFORE updating database
+                    file_hash = result.get('file_hash')
+                    if file_hash:
+                        existing_file = self.db_manager.get_file_by_hash(file_hash)
+                        if existing_file and existing_file.get('video_id') != video_id:
+                            print(f"🔍 [DUPLICATE] Detected duplicate of existing file: {existing_file.get('video_id')}")
+                            
+                            # Remove newly downloaded file
+                            if result.get('file_path') and os.path.exists(result['file_path']):
+                                try:
+                                    os.remove(result['file_path'])
+                                    print(f"🗑️ [DUPLICATE] Removed duplicate file")
+                                except Exception as e:
+                                    print(f"Error removing duplicate file: {e}")
+                            
+                            # Mark as duplicate, reference existing file
+                            result['status'] = 'duplicate'
+                            result['file_path'] = existing_file.get('file_path', '')
+
+                    # Update database with results
                     self.db_manager.update_video_with_download_result(video_id, result)
-                    downloaded_count += 1
-                    print(f"✅ Downloaded: {video['title']}")
+                    
+                    if result.get('status') == 'downloaded':
+                        downloaded_count += 1
+                        print(f"✅ [DOWNLOAD] Successfully downloaded: {video['title']}")
+                    else:
+                        print(f"📋 [DUPLICATE] Marked as duplicate: {video['title']}")
                 else:
                     # Mark as failed
                     self.db_manager.update_video_status(video_id, 'failed')
-                    print(f"❌ Failed: {video['title']}")
-                    
+                    print(f"❌ [DOWNLOAD] Failed: {video['title']}")
+
             except Exception as e:
-                print(f"❌ Error downloading {video_id}: {e}")
+                print(f"❌ [DOWNLOAD] Error downloading {video_id}: {e}")
                 self.db_manager.update_video_status(video_id, 'failed')
-        
+            finally:
+                # FIXED: Always remove from processing set
+                with self._processing_lock:
+                    self._processing_videos.discard(video_id)
+
         return downloaded_count
 
     def check_playlist(self, playlist: dict):
-        """Check a single playlist for new videos and download pending ones"""
+        """FIXED: Check playlist - only add to database, don't download immediately"""
         try:
             # Use dual-source method for playlist checking
             playlist_info = self.downloader.get_playlist_dual_source(playlist['url'])
-            
             if not playlist_info or not playlist_info.get('entries'):
-                print(f"❌ No entries found for playlist: {playlist['url']}")
+                print(f"❌ [CHECK] No entries found for playlist: {playlist['url']}")
                 return 0
 
             new_videos = 0
             skipped_videos = 0
 
-            # Check for new videos from playlist
+            # FIXED: Only add to database, don't download during check
             for entry in playlist_info['entries']:
                 if not isinstance(entry, dict) or not entry.get('id'):
                     continue
 
                 video_id = entry['id']
 
-                # Skip if already being processed
-                with self._processing_lock:
-                    if video_id in self._processing_videos:
-                        print(f"⚠️ Video {video_id} already being processed, skipping")
-                        continue
-
-                # Check if already successfully downloaded
+                # Check if already successfully downloaded or exists
                 if self.db_manager.video_exists(video_id):
                     skipped_videos += 1
                     continue
 
-                print(f"🆕 New video found: {entry['title']} ({video_id})")
+                # Check if already in database (any status)
+                if self.db_manager.video_in_database(video_id):
+                    skipped_videos += 1
+                    continue
 
-                # Add to processing set
-                with self._processing_lock:
-                    self._processing_videos.add(video_id)
+                print(f"🆕 [CHECK] New video found: {entry['title']} ({video_id})")
 
+                # FIXED: Only add to database with 'pending' status - don't download
                 try:
-                    # Add to database if not exists
-                    if not self.db_manager.video_in_database(video_id):
-                        video_data = {
-                            'video_id': video_id,
-                            'title': entry.get('title', 'Unknown Title'),
-                            'uploader': entry.get('artist', entry.get('uploader', 'Unknown Artist')),
-                            'duration': entry.get('duration', 0),
-                            'upload_date': entry.get('upload_date', ''),
-                            'playlist_id': playlist['id'],
-                            'metadata': {
-                                'album': entry.get('album', 'Unknown Album'),
-                                'year': entry.get('year'),
-                                'thumbnail': entry.get('thumbnail'),
-                                'source': 'playlist_check'
-                            },
-                            'status': 'pending'
-                        }
-                        self.db_manager.add_video(video_data)
+                    video_data = {
+                        'video_id': video_id,
+                        'title': entry.get('title', 'Unknown Title'),
+                        'uploader': entry.get('artist', entry.get('uploader', 'Unknown Artist')),
+                        'duration': entry.get('duration', 0),
+                        'upload_date': entry.get('upload_date', ''),
+                        'playlist_id': playlist['id'],
+                        'metadata': {
+                            'album': entry.get('album', 'Unknown Album'),
+                            'year': entry.get('year'),
+                            'thumbnail': entry.get('thumbnail'),
+                            'source': 'playlist_check'
+                        },
+                        'status': 'pending'
+                    }
 
-                    # Update status to processing and download
-                    self.db_manager.update_video_status(video_id, 'processing')
-                    
-                    download_result = self.downloader.download_video(entry['url'], video_id, playlist['id'])
-                    
-                    if download_result:
-                        # Check for duplicates by hash
-                        if download_result.get('file_hash'):
-                            existing_file = self.db_manager.get_file_by_hash(download_result['file_hash'])
-                            if existing_file:
-                                print(f"🔍 Duplicate detected: {download_result['title']}")
-                                if download_result.get('file_path') and os.path.exists(download_result['file_path']):
-                                    try:
-                                        os.remove(download_result['file_path'])
-                                        print(f"🗑️ Removed duplicate file")
-                                    except Exception as e:
-                                        print(f"Error removing duplicate file: {e}")
-                                download_result['status'] = 'duplicate'
-                                download_result['file_path'] = existing_file['file_path']
-
-                        # Update database with results
-                        self.db_manager.update_video_with_download_result(video_id, download_result)
-                        
-                        self.db_manager.log_download_action(
-                            video_id,
-                            download_result.get('status', 'processed'),
-                            f"Downloaded from playlist {playlist['name']}",
-                            playlist['id']
-                        )
-
-                        if download_result.get('status') == 'downloaded':
-                            new_videos += 1
-                            print(f"✅ Successfully downloaded: {download_result['title']}")
-                    else:
-                        self.db_manager.update_video_status(video_id, 'failed')
+                    if self.db_manager.add_video(video_data):
+                        new_videos += 1
+                        print(f"✅ [CHECK] Added to database: {entry['title']}")
 
                 except Exception as e:
-                    print(f"❌ Error processing new video {video_id}: {e}")
-                    self.db_manager.update_video_status(video_id, 'failed')
-                finally:
-                    # Remove from processing set
-                    with self._processing_lock:
-                        self._processing_videos.discard(video_id)
+                    print(f"❌ [CHECK] Error adding new video {video_id}: {e}")
 
-            # Process any remaining pending videos for this playlist
-            pending_videos = self.db_manager.get_videos_by_status('pending', playlist['id'])
-            if pending_videos:
-                print(f"📋 Found {len(pending_videos)} pending videos to download")
-                pending_downloaded = self.process_pending_downloads(playlist['id'])
-                new_videos += pending_downloaded
+            # FIXED: Only process pending downloads if no other operation is running
+            with self._master_lock:
+                if not (self._is_checking or self._is_initial_checking):
+                    pending_videos = self.db_manager.get_videos_by_status('pending', playlist['id'])
+                    if pending_videos:
+                        print(f"📋 [CHECK] Found {len(pending_videos)} pending videos to download")
+                        self._is_downloading = True
+
+            try:
+                if not (self._is_checking or self._is_initial_checking):
+                    pending_downloaded = self.process_pending_downloads(playlist['id'])
+                    print(f"✅ [CHECK] Downloaded {pending_downloaded} pending videos")
+            finally:
+                with self._master_lock:
+                    self._is_downloading = False
 
             self.db_manager.update_playlist_check_time(playlist['id'])
-            print(f"✅ Playlist check complete: {new_videos} new, {skipped_videos} skipped")
+            print(f"✅ [CHECK] Playlist check complete: {new_videos} new, {skipped_videos} skipped")
+
             return new_videos
 
         except Exception as e:
-            print(f"❌ Error checking playlist: {e}")
+            print(f"❌ [CHECK] Error checking playlist: {e}")
             return 0
 
     # Legacy method for backward compatibility
     def perform_initial_playlist_check(self, playlist_id: int, playlist_info: dict):
         """Legacy method - redirects to new dual-source import"""
-        playlist = self.db_manager.get_active_playlists()
+        playlists = self.db_manager.get_active_playlists()
         playlist_url = None
-        
-        for p in playlist:
+        for p in playlists:
             if p['id'] == playlist_id:
                 playlist_url = p['url']
                 break
-                
+
         if playlist_url:
             return self.perform_full_playlist_import(playlist_id, playlist_url)
         else:
