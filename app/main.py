@@ -80,6 +80,9 @@ async def lifespan(app: FastAPI):
     # Startup logic
     print("🔄 Starting YouTube Playlist Downloader...")
     try:
+        # Reset any stuck processing videos to pending
+        db_manager.reset_processing_to_pending()
+        
         playlists = db_manager.get_active_playlists()
         app_status["total_playlists"] = len(playlists)
         
@@ -140,75 +143,117 @@ async def home(request: Request = None):
         return templates.TemplateResponse("index.html", {"request": request})
     else:
         return HTMLResponse(f"""
-        <html>
-        <head><title>YouTube Playlist Downloader</title></head>
-        <body>
-            <h1>✅ API is running! Web interface available.</h1>
-            <p><strong>📁 Download directory:</strong> <code>{config.DOWNLOAD_DIR}</code></p>
-            <p><strong>🔧 Default playlist:</strong> <code>{getattr(config, 'DEFAULT_PLAYLISTS', ['None configured'])[0] if hasattr(config, 'DEFAULT_PLAYLISTS') and config.DEFAULT_PLAYLISTS else 'None'}</code></p>
-            <h2>API Usage:</h2>
-            <pre>
-curl -X POST "http://localhost:8080/api/playlists" \\
+<!DOCTYPE html>
+<html>
+<head>
+    <title>YouTube Playlist Downloader API</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 40px; line-height: 1.6; }}
+        .container {{ max-width: 800px; margin: 0 auto; }}
+        .header {{ background: #f4f4f4; padding: 20px; border-radius: 8px; }}
+        .endpoint {{ background: #e8f5e8; padding: 15px; margin: 10px 0; border-radius: 5px; }}
+        code {{ background: #f0f0f0; padding: 2px 6px; border-radius: 3px; }}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎵 YouTube Playlist Downloader API</h1>
+            <p>✅ API is running! Web interface available.</p>
+        </div>
+
+        <h2>📁 Configuration</h2>
+        <p><strong>Download directory:</strong> <code>{config.DOWNLOAD_DIR}</code></p>
+        <p><strong>Default playlist:</strong> <code>{getattr(config, 'DEFAULT_PLAYLISTS', ['None configured'])[0] if hasattr(config, 'DEFAULT_PLAYLISTS') and config.DEFAULT_PLAYLISTS else 'None'}</code></p>
+
+        <h2>🚀 Quick Start</h2>
+        <div class="endpoint">
+            <h3>Add a playlist:</h3>
+            <pre><code>curl -X POST "http://localhost:8080/api/playlists" \\
   -H "Content-Type: application/json" \\
-  -d '{{"url":"https://music.youtube.com/playlist?list=YOUR_PLAYLIST_ID","name":"My Music"}}'
-            </pre>
-        </body>
-        </html>
+  -d '{{"url":"https://music.youtube.com/playlist?list=YOUR_PLAYLIST_ID","name":"My Music"}}'</code></pre>
+        </div>
+
+        <div class="endpoint">
+            <h3>Check status:</h3>
+            <pre><code>curl "http://localhost:8080/api/status"</code></pre>
+        </div>
+
+        <div class="endpoint">
+            <h3>View downloads:</h3>
+            <pre><code>curl "http://localhost:8080/api/downloads"</code></pre>
+        </div>
+
+        <h2>📖 API Endpoints</h2>
+        <ul>
+            <li><code>GET /api/status</code> - Get system status</li>
+            <li><code>POST /api/playlists</code> - Add new playlist</li>
+            <li><code>GET /api/playlists</code> - List all playlists</li>
+            <li><code>DELETE /api/playlists/{{id}}</code> - Remove playlist</li>
+            <li><code>POST /api/check</code> - Trigger manual check</li>
+            <li><code>GET /api/downloads</code> - Get recent downloads</li>
+        </ul>
+    </div>
+</body>
+</html>
         """)
 
 # API Routes
 @app.post("/api/playlists")
-async def add_playlist(playlist_request: PlaylistRequest):
-    """Add a new playlist to monitor"""
+async def add_playlist(playlist_request: PlaylistRequest, background_tasks: BackgroundTasks):
+    """Add a new playlist with dual-source import"""
     try:
+        # Add playlist to database
         playlist_id = db_manager.add_playlist(playlist_request.url, playlist_request.name)
-        if playlist_id:
-            # Get playlist info using FIXED method name
-            try:
-                playlist_info = downloader.get_playlist_info_batch(playlist_request.url)
-                if playlist_info and playlist_info.get('entries'):
-                    # Perform initial check for the playlist
-                    new_downloads, existing_count, failed_count = monitor.perform_initial_playlist_check(
-                        playlist_id, playlist_info
-                    )
-                    return {
-                        "success": True,
-                        "message": f"Playlist added successfully",
-                        "playlist_id": playlist_id,
-                        "new_downloads": new_downloads,
-                        "existing_count": existing_count,
-                        "failed_count": failed_count
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "message": "Could not fetch playlist information",
-                        "playlist_id": playlist_id
-                    }
-            except Exception as e:
-                return {
-                    "success": False,
-                    "message": f"Error fetching playlist: {str(e)}",
-                    "playlist_id": playlist_id
-                }
-        else:
-            return {"success": False, "message": "Failed to add playlist or playlist already exists"}
+        
+        if not playlist_id:
+            return {"success": False, "message": "Playlist already exists or failed to add"}
+        
+        # Schedule background dual-source import
+        background_tasks.add_task(
+            monitor.perform_full_playlist_import,
+            playlist_id,
+            playlist_request.url
+        )
+        
+        app_status["current_activity"] = f"Importing playlist: {playlist_request.name or 'Untitled'}"
+        
+        return {
+            "success": True,
+            "message": "Playlist added and dual-source import started in background",
+            "playlist_id": playlist_id,
+            "playlist_name": playlist_request.name or "Untitled Playlist"
+        }
+        
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error adding playlist: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
 
 @app.get("/api/status")
 async def get_status():
     """Get system status"""
-    recent_downloads = db_manager.get_recent_downloads(5)
-    app_status["recent_downloads"] = recent_downloads
-    app_status["total_downloads"] = len(recent_downloads)
-    return app_status
+    try:
+        recent_downloads = db_manager.get_recent_downloads(5)
+        playlists = db_manager.get_active_playlists()
+        
+        app_status.update({
+            "monitoring": monitor.running,
+            "total_playlists": len(playlists),
+            "total_downloads": len(db_manager.get_recent_downloads(1000)),
+            "recent_downloads": recent_downloads,
+            "last_check": datetime.now().isoformat() if monitor.running else None
+        })
+        
+        return app_status
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting status: {str(e)}")
 
-@app.post("/api/check")
+@app.post("/api/check-now")
 async def manual_check():
     """Trigger manual check of all playlists"""
     try:
         result = monitor.trigger_manual_check()
+        if result.get("success"):
+            app_status["current_activity"] = "Manual check in progress..."
         return result
     except Exception as e:
         return {
@@ -223,15 +268,26 @@ async def get_playlists():
     try:
         playlists = db_manager.get_active_playlists()
         playlist_status = []
+        
         for playlist in playlists:
             status_counts = db_manager.get_playlist_status_counts(playlist['id'])
             playlist_status.append({
                 **playlist,
                 **status_counts
             })
-        return {"playlists": playlist_status}
+        
+        return playlist_status
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting playlists: {str(e)}")
+
+@app.get("/api/playlists/{playlist_id}/stats")
+async def get_playlist_stats(playlist_id: int):
+    """Get status counts for a specific playlist"""
+    try:
+        stats = db_manager.get_playlist_status_counts(playlist_id)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting playlist stats: {str(e)}")
 
 @app.delete("/api/playlists/{playlist_id}")
 async def deactivate_playlist(playlist_id: int):
@@ -247,7 +303,7 @@ async def get_recent_downloads():
     """Get recent downloads"""
     try:
         downloads = db_manager.get_recent_downloads(20)
-        return {"downloads": downloads}
+        return downloads
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting downloads: {str(e)}")
 
