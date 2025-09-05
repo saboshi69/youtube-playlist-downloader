@@ -20,10 +20,7 @@ class YouTubeDownloader:
         self.audio_quality = audio_quality
         self.config = Config()
         os.makedirs(download_dir, exist_ok=True)
-
-        # Initialize YouTube Music API with Hong Kong localization
         self.ytmusic = YTMusic(language='zh_TW', location='HK')
-
         self.base_ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(download_dir, '%(title)s.%(ext)s'),
@@ -37,25 +34,16 @@ class YouTubeDownloader:
             'quiet': False,
         }
 
-        # Remove cache - we use database instead
-        # self._playlist_cache = {}
-
     def get_playlist_info(self, playlist_url: str) -> Dict:
-        """Extract playlist information using ytmusicapi with HK localization"""
         print(f"🔍 Extracting playlist with ytmusicapi (HK): {playlist_url}")
         try:
-            # Extract playlist ID from URL
             playlist_id = self._extract_playlist_id(playlist_url)
             if not playlist_id:
                 raise ValueError("Invalid playlist URL")
-
-            # Get playlist info with Hong Kong localization
             playlist_info = self.ytmusic.get_playlist(playlist_id, limit=None)
             if not playlist_info or not playlist_info.get('tracks'):
                 print(f"❌ No tracks found in playlist")
                 return self._fallback_playlist_extraction(playlist_url)
-
-            # NO CACHING - Convert ytmusicapi format to our expected format
             entries = []
             for track in playlist_info['tracks']:
                 if not track.get('videoId'):
@@ -74,45 +62,33 @@ class YouTubeDownloader:
                     'year': track.get('year', None)
                 }
                 entries.append(video_entry)
-
             print(f"✅ Successfully extracted {len(entries)} tracks with HK metadata")
             return {
                 'title': playlist_info.get('title', 'Unknown Playlist'),
                 'entries': entries,
                 'playlist_id': playlist_id
             }
-
         except Exception as e:
             print(f"❌ ytmusicapi extraction failed: {e}")
-            # Fallback to yt-dlp extraction
             return self._fallback_playlist_extraction(playlist_url)
 
     def download_video_from_database(self, video_url: str, video_id: str, playlist_id: str = None) -> Optional[Dict]:
-        """Download video using metadata from DATABASE (no cache)"""
         print(f"🎵 Downloading video from database metadata: {video_id}")
         clean_url = video_url.replace('music.youtube.com', 'www.youtube.com')
         safe_title = self._sanitize_filename(f"video_{video_id}")
-
         try:
-            # Step 1: Get yt-dlp technical info (for duration, availability, etc.)
             with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
                 tech_info = ydl.extract_info(clean_url, download=False)
-            if not tech_info:
-                print(f"❌ Could not get technical info for {video_id}")
-                return None
+            if not tech_info: return None
             availability = tech_info.get('availability', 'public')
             if availability in ['private', 'subscriber_only', 'premium_only', 'needs_auth']:
                 print(f"🔒 Video requires authentication: {availability}")
                 return None
-
-            # Step 2: GET METADATA FROM DATABASE (no cache)
-            title = f'video_{video_id}'  # Default fallback
+            title = f'video_{video_id}'
             album_name = 'Unknown Album'
             artist = 'Unknown Artist'
             year = None
             thumbnail_url = None
-
-            # Get metadata from database
             try:
                 with sqlite3.connect(self.config.DATABASE_PATH) as conn:
                     cursor = conn.execute('SELECT metadata FROM videos WHERE video_id = ?', (video_id,))
@@ -124,7 +100,6 @@ class YouTubeDownloader:
                         album_name = db_metadata.get('album', album_name)
                         year = db_metadata.get('year')
                         thumbnail_url = db_metadata.get('thumbnail')
-                        
                         print(f"✅ Using DATABASE metadata:")
                         print(f" Title: {title}")
                         print(f" Artist: {artist}")
@@ -138,11 +113,7 @@ class YouTubeDownloader:
                 print(f"Error getting database metadata: {e}")
                 title = tech_info.get('title', title)
                 artist = tech_info.get('uploader', artist)
-
-            # Clean title for filename
             clean_title = self._sanitize_filename(title)
-
-            # Step 3: Download with cleaned filename
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': os.path.join(self.download_dir, f'{clean_title}.%(ext)s'),
@@ -155,17 +126,12 @@ class YouTubeDownloader:
                 'no_warnings': False,
                 'quiet': False,
             }
-
             with yt_dlp.YoutubeDL(ydl_opts) as download_ydl:
                 download_ydl.download([clean_url])
-
-            # Step 4: Find downloaded file and add metadata
             actual_file_path = self._find_downloaded_file(clean_title, safe_title)
             if actual_file_path and os.path.exists(actual_file_path):
                 file_size = os.path.getsize(actual_file_path)
                 file_hash = self._calculate_file_hash(actual_file_path)
-
-                # Use database metadata for tagging
                 combined_info = {
                     'title': title,
                     'artist': artist,
@@ -177,17 +143,12 @@ class YouTubeDownloader:
                     'description': tech_info.get('description', ''),
                     'view_count': tech_info.get('view_count', 0)
                 }
-
                 self._add_mp3_metadata(actual_file_path, combined_info, album_name, artist, year)
-
                 print(f"✅ Downloaded with database metadata: {title} ({file_size} bytes)")
-
-                # Delay if configured
                 if self.config.DOWNLOAD_DELAY_ENABLED:
                     wait_time = random.uniform(self.config.DOWNLOAD_DELAY_MIN, self.config.DOWNLOAD_DELAY_MAX)
                     print(f"⏰ Waiting {wait_time:.1f} seconds...")
                     time.sleep(wait_time)
-
                 return {
                     'video_id': video_id,
                     'title': title,
@@ -209,35 +170,26 @@ class YouTubeDownloader:
             else:
                 print(f"❌ File not found after download for {video_id}")
                 return None
-
         except Exception as e:
             print(f"❌ Download failed for {video_id}: {e}")
             return None
 
     def download_video(self, video_url: str, video_id: str, playlist_id: str = None) -> Optional[Dict]:
-        """Download video - Uses database first, fallback to old method if needed"""
-        # Try database method first
         try:
             with sqlite3.connect(self.config.DATABASE_PATH) as conn:
                 cursor = conn.execute('SELECT metadata FROM videos WHERE video_id = ?', (video_id,))
                 row = cursor.fetchone()
                 if row and row[0]:
-                    # Database metadata exists, use it
                     return self.download_video_from_database(video_url, video_id, playlist_id)
         except Exception as e:
             print(f"Database check failed: {e}")
-
-        # Fallback to original method for backwards compatibility
         return self._download_video_original(video_url, video_id, playlist_id)
 
     def _download_video_original(self, video_url: str, video_id: str, playlist_id: str = None) -> Optional[Dict]:
-        """Original download method as fallback"""
         print(f"🎵 Downloading video (fallback method): {video_id}")
         clean_url = video_url.replace('music.youtube.com', 'www.youtube.com')
         safe_title = self._sanitize_filename(f"video_{video_id}")
-
         try:
-            # Step 1: Get yt-dlp technical info (for duration, availability, etc.)
             with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
                 tech_info = ydl.extract_info(clean_url, download=False)
             if not tech_info:
@@ -248,21 +200,39 @@ class YouTubeDownloader:
                 print(f"🔒 Video requires authentication: {availability}")
                 return None
 
-            # Step 2: Use basic yt-dlp metadata
-            title = tech_info.get('title', f'video_{video_id}')
-            artist = tech_info.get('uploader', 'Unknown Artist')
-            album_name = 'Unknown Album'
-            year = None
-            thumbnail_url = tech_info.get('thumbnail')
+            # FIRST: Try to get metadata from database for fallback too!
+            try:
+                with sqlite3.connect(self.config.DATABASE_PATH) as conn:
+                    cursor = conn.execute('SELECT metadata FROM videos WHERE video_id = ?', (video_id,))
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        db_metadata = json.loads(row[0])
+                        title = db_metadata.get('title', tech_info.get('title', f'video_{video_id}'))
+                        artist = db_metadata.get('artist', tech_info.get('uploader', 'Unknown Artist'))
+                        album_name = db_metadata.get('album', 'Unknown Album')
+                        year = db_metadata.get('year')
+                        thumbnail_url = db_metadata.get('thumbnail', tech_info.get('thumbnail'))
+                        print(f"✅ Fallback using database metadata:")
+                        print(f" Title: {title}")
+                        print(f" Artist: {artist}")
+                    else:
+                        title = tech_info.get('title', f'video_{video_id}')
+                        artist = tech_info.get('uploader', 'Unknown Artist')
+                        album_name = 'Unknown Album'
+                        year = None
+                        thumbnail_url = tech_info.get('thumbnail')
+                        print(f"⚠️ Using yt-dlp fallback metadata:")
+                        print(f" Title: {title}")
+                        print(f" Artist: {artist}")
+            except Exception as e:
+                title = tech_info.get('title', f'video_{video_id}')
+                artist = tech_info.get('uploader', 'Unknown Artist')
+                album_name = 'Unknown Album'
+                year = None
+                thumbnail_url = tech_info.get('thumbnail')
+                print(f"⚠️ Using yt-dlp fallback metadata (db error): {e}")
 
-            print(f"⚠️ Using yt-dlp fallback metadata:")
-            print(f" Title: {title}")
-            print(f" Artist: {artist}")
-
-            # Clean title for filename
             clean_title = self._sanitize_filename(title)
-
-            # Step 3: Download with cleaned filename
             ydl_opts = {
                 'format': 'bestaudio/best',
                 'outtmpl': os.path.join(self.download_dir, f'{clean_title}.%(ext)s'),
@@ -275,17 +245,12 @@ class YouTubeDownloader:
                 'no_warnings': False,
                 'quiet': False,
             }
-
             with yt_dlp.YoutubeDL(ydl_opts) as download_ydl:
                 download_ydl.download([clean_url])
-
-            # Step 4: Find downloaded file and add metadata
             actual_file_path = self._find_downloaded_file(clean_title, safe_title)
             if actual_file_path and os.path.exists(actual_file_path):
                 file_size = os.path.getsize(actual_file_path)
                 file_hash = self._calculate_file_hash(actual_file_path)
-
-                # Use basic metadata for tagging
                 combined_info = {
                     'title': title,
                     'artist': artist,
@@ -297,17 +262,12 @@ class YouTubeDownloader:
                     'description': tech_info.get('description', ''),
                     'view_count': tech_info.get('view_count', 0)
                 }
-
                 self._add_mp3_metadata(actual_file_path, combined_info, album_name, artist, year)
-
                 print(f"✅ Downloaded with fallback metadata: {title} ({file_size} bytes)")
-
-                # Delay if configured
                 if self.config.DOWNLOAD_DELAY_ENABLED:
                     wait_time = random.uniform(self.config.DOWNLOAD_DELAY_MIN, self.config.DOWNLOAD_DELAY_MAX)
                     print(f"⏰ Waiting {wait_time:.1f} seconds...")
                     time.sleep(wait_time)
-
                 return {
                     'video_id': video_id,
                     'title': title,
@@ -329,7 +289,6 @@ class YouTubeDownloader:
             else:
                 print(f"❌ File not found after download for {video_id}")
                 return None
-
         except Exception as e:
             print(f"❌ Download failed for {video_id}: {e}")
             return None
