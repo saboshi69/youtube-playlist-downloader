@@ -42,7 +42,7 @@ class YouTubeDownloader:
                 raise ValueError("Invalid playlist URL")
 
             # BATCH FETCH: Get entire playlist at once
-            playlist_info = self.ytmusic.get_playlist(playlist_id, limit=None)
+            playlist_info = self.ytmusic.get_playlist(playlist_id, limit=1000)
             
             if not playlist_info or not playlist_info.get('tracks'):
                 raise Exception("No tracks found in playlist")
