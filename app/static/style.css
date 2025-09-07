@@ -243,3 +243,16 @@ section h2 {
         margin-top: 10px;
     }
 }
+
+.error {
+    color: #721c24;
+    background: #f8d7da;
+    padding: 10px;
+    border-radius: 5px;
+    border: 1px solid #f5c6cb;
+}
+
+.btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}

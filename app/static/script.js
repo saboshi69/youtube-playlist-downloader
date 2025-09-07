@@ -7,55 +7,83 @@ class PlaylistDownloader {
     }
 
     initializeEventListeners() {
-        document.getElementById('playlist-form').addEventListener('submit', (e) => {
-            e.preventDefault();
-            this.addPlaylist();
-        });
+        // Add null checks for safety
+        const playlistForm = document.getElementById('playlist-form');
+        const checkNowBtn = document.getElementById('check-now');
+        const validateBtn = document.getElementById('validate-files');
 
-        document.getElementById('check-now').addEventListener('click', () => {
-            this.triggerCheck();
-        });
+        if (playlistForm) {
+            playlistForm.addEventListener('submit', (e) => {
+                e.preventDefault();
+                this.addPlaylist();
+            });
+        }
+
+        if (checkNowBtn) {
+            checkNowBtn.addEventListener('click', () => {
+                this.triggerCheck();
+            });
+        }
+
+        // NEW: Validate files button
+        if (validateBtn) {
+            validateBtn.addEventListener('click', () => {
+                this.validateDownloadedFiles();
+            });
+        }
     }
 
-    async loadData() {
-        await this.loadStatus();
-        await this.loadPlaylists();
-        await this.loadDownloads();
-    }
-
-    async loadStatus() {
+    // NEW: Method to validate downloaded files
+    async validateDownloadedFiles() {
+        const btn = document.getElementById('validate-files');
+        const originalText = btn.textContent;
+        
+        btn.disabled = true;
+        btn.textContent = 'Validating...';
+        
         try {
-            const response = await fetch('/api/status');
-            const status = await response.json();
-
-            document.getElementById('status').textContent = status.monitoring ? 'Running' : 'Stopped';
-            document.getElementById('status').className = status.monitoring ? 'status-value active' : 'status-value';
-            document.getElementById('playlist-count').textContent = status.total_playlists;
-            document.getElementById('download-count').textContent = status.total_downloads;
-            document.getElementById('current-activity').textContent = status.current_activity;
-
-            // Update processing state
-            this.isProcessing = (status.current_activity && status.current_activity !== 'Idle');
-
-            if (status.last_check) {
-                const lastCheck = new Date(status.last_check).toLocaleString();
-                document.getElementById('last-check').textContent = lastCheck;
+            const response = await fetch('/api/validate-downloads', {
+                method: 'POST'
+            });
+            const result = await response.json();
+            
+            if (result.success) {
+                this.showMessage(
+                    `✅ Validation complete! Fixed ${result.fixed_count} missing files, ${result.valid_count} files are valid.`, 
+                    'success'
+                );
+                // Refresh downloads list
+                await this.loadDownloads();
+            } else {
+                this.showMessage(`❌ Validation failed: ${result.message}`, 'error');
             }
         } catch (error) {
-            console.error('Error loading status:', error);
+            this.showMessage(`❌ Validation error: ${error.message}`, 'error');
+        } finally {
+            btn.disabled = false;
+            btn.textContent = originalText;
         }
     }
 
     async loadPlaylists() {
         try {
             const response = await fetch('/api/playlists');
+            
+            if (!response.ok) {
+                console.error('Failed to fetch playlists, status:', response.status);
+                const container = document.getElementById('playlists-list');
+                container.innerHTML = '<p class="error">Failed to load playlists</p>';
+                return;
+            }
+            
             const playlists = await response.json();
-
+            console.log('Loaded playlists:', playlists); // Debug log
+            
             const container = document.getElementById('playlists-list');
             container.innerHTML = '';
 
             if (playlists.length === 0) {
-                container.innerHTML = '<p class="loading">No playlists added yet.</p>';
+                container.innerHTML = '<p>No playlists added yet.</p>';
                 return;
             }
 
@@ -98,12 +126,14 @@ class PlaylistDownloader {
                 info.appendChild(title);
                 info.appendChild(url);
                 info.appendChild(stats);
-
                 div.appendChild(info);
                 container.appendChild(div);
             });
+
         } catch (error) {
             console.error('Error loading playlists:', error);
+            const container = document.getElementById('playlists-list');
+            container.innerHTML = '<p class="error">Error loading playlists</p>';
         }
     }
 

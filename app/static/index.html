@@ -17,65 +17,45 @@
                 </div>
                 <div class="status-item">
                     <span class="label">Playlists:</span>
-                    <span id="playlist-count" class="status-value">0</span>
+                    <span id="playlist-count" class="status-value">-</span>
                 </div>
                 <div class="status-item">
                     <span class="label">Downloads:</span>
-                    <span id="download-count" class="status-value">0</span>
+                    <span id="download-count" class="status-value">-</span>
                 </div>
+            </div>
+            <div class="activity-status">
+                <strong>Current Activity:</strong> <span id="current-activity">Loading...</span>
+                <div class="last-check">Last Check: <span id="last-check">Never</span></div>
             </div>
         </header>
 
-        <main>
-            <!-- Add Playlist Section -->
-            <section class="add-playlist">
-                <h2>Add New Playlist</h2>
-                <form id="playlist-form">
-                    <div class="form-group">
-                        <label for="url">Playlist URL</label>
-                        <input type="text" 
-                            id="url" 
-                            name="url" 
-                            placeholder="https://www.youtube.com/playlist?list=..."
-                            required />
-                    </div>
-                    <div class="form-group">
-                        <label for="name">Playlist Name (optional)</label>
-                        <input type="text" 
-                            id="name" 
-                            name="name" 
-                            placeholder="My Playlist" />
-                    </div>
-                    <button type="submit" class="btn btn-primary">Add Playlist</button>
-                </form>
-
-            </section>
-
-            <!-- Current Activity -->
-            <section class="activity">
-                <h3>Current Activity</h3>
-                <div id="current-activity" class="activity-status">Idle</div>
-                <div class="last-check">
-                    Last check: <span id="last-check">Never</span>
+        <section>
+            <h2>Add New Playlist</h2>
+            <form id="playlist-form">
+                <div class="form-group">
+                    <label for="url">Playlist URL:</label>
+                    <input type="url" id="url" name="url" placeholder="https://music.youtube.com/playlist?list=..." required>
                 </div>
-            </section>
-
-            <!-- Playlists List -->
-            <section class="playlists">
-                <h2>Monitored Playlists</h2>
-                <div id="playlists-list">
-                    <div class="loading">Loading playlists...</div>
+                <div class="form-group">
+                    <label for="name">Playlist Name (optional):</label>
+                    <input type="text" id="name" name="name" placeholder="My Awesome Playlist">
                 </div>
-            </section>
+                <button type="submit" class="btn btn-primary">Add Playlist</button>
+                <button type="button" id="check-now" class="btn btn-secondary">Check Now</button>
+                <button type="button" id="validate-files" class="btn btn-secondary">Validate Downloads</button>
+            </form>
+        </section>
 
-            <!-- Recent Downloads -->
-            <section class="recent-downloads">
-                <h2>Recent Downloads</h2>
-                <div id="downloads-list">
-                    <div class="loading">Loading downloads...</div>
-                </div>
-            </section>
-        </main>
+        <section>
+            <h2>Monitored Playlists</h2>
+            <div id="playlists-list">Loading playlists...</div>
+        </section>
+
+        <section>
+            <h2>Recent Downloads</h2>
+            <div id="downloads-list">Loading downloads...</div>
+        </section>
     </div>
 
     <script src="/static/script.js"></script>

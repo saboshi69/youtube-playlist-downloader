@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import uvicorn
 from datetime import datetime
 import sqlite3
+import os
 from contextlib import asynccontextmanager
 
 # Import your custom modules
@@ -306,6 +307,43 @@ async def get_recent_downloads():
         return downloads
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error getting downloads: {str(e)}")
+
+@app.post("/api/validate-downloads")
+async def validate_downloads():
+    """Validate that downloaded files actually exist in the folder and fix database"""
+    try:
+        # Get all videos marked as 'downloaded'
+        downloaded_videos = db_manager.get_videos_by_status('downloaded')
+        
+        valid_count = 0
+        fixed_count = 0
+        
+        for video in downloaded_videos:
+            file_path = video.get('file_path')
+            video_id = video.get('video_id')
+            
+            # Check if file actually exists
+            if file_path and os.path.exists(file_path):
+                valid_count += 1
+            else:
+                # File missing - mark as pending for re-download
+                print(f"🔍 [VALIDATE] Missing file for {video_id}: {file_path}")
+                db_manager.update_video_status(video_id, 'pending')
+                fixed_count += 1
+        
+        return {
+            "success": True,
+            "valid_count": valid_count,
+            "fixed_count": fixed_count,
+            "message": f"Validation complete. {valid_count} files valid, {fixed_count} marked for re-download."
+        }
+        
+    except Exception as e:
+        print(f"❌ Validation error: {e}")
+        return {
+            "success": False,
+            "message": str(e)
+        }
 
 # Run the application
 if __name__ == "__main__":
